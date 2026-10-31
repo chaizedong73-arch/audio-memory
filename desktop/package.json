@@ -1,0 +1,28 @@
+{
+  "name": "audio-memory-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "build": "vite build",
+    "start": "electron .",
+    "check": "tsc --noEmit",
+    "postinstall": "install-electron",
+    "test": "node --test --test-concurrency=1 gateway-client.test.cjs service-controller.test.cjs gateway-pagination.test.cjs context-controller.test.cjs recording-controller.test.cjs visual-controller.test.cjs video-import.test.cjs camera-controller.test.cjs",
+    "test:desktop": "node desktop-lifecycle.test.cjs && node desktop-lifecycle.test.cjs --close && node context-lifecycle.test.cjs && node context-lifecycle.test.cjs --close && node context-lifecycle.test.cjs --gateway-stop && node context-ui.test.cjs && node recording-lifecycle.test.cjs && node recording-lifecycle.test.cjs --close && node correction-ui.test.cjs && node correction-ui.test.cjs --stale && node visual-lifecycle.test.cjs && node camera-ui.test.cjs && node camera-ui.test.cjs --wifi",
+    "test:gateway": "node real-gateway.test.cjs"
+  },
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "@vitejs/plugin-react": "6.1.1",
+    "electron": "44.9.3",
+    "electron-builder": "26.15.3",
+    "typescript": "7.0.2",
+    "vite": "8.2.2"
+  }
+}

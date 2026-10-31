@@ -1,0 +1,42 @@
+appId: org.audiomemory.desktop.preview
+productName: Audio Memory Preview
+directories:
+  output: ../../audio-memory-build/electron-preview
+files:
+  - dist/**/*
+  - main.cjs
+  - preload.cjs
+  - gateway-client.cjs
+  - camera-client.cjs
+  - classroom-flow.cjs
+  - service-controller.cjs
+  - video-import.cjs
+  - package.json
+extraResources:
+  - from: ..
+    to: backend
+    filter:
+      - '*.py'
+      - '!test_*.py'
+      - '!visual_vocabulary_test.py'
+      - ppt_ocr.ps1
+      - hotwords.json
+      - scene/phone.html
+      - tools/android/platform-tools/adb.exe
+      - tools/android/platform-tools/AdbWinApi.dll
+      - tools/android/platform-tools/AdbWinUsbApi.dll
+      - tools/android/platform-tools/NOTICE.txt
+      - tools/android/platform-tools/source.properties
+  - from: registry.mjs
+    to: backend/registry.mjs
+  - from: ../../audio-memory-build/standalone-20261031/runtime
+    to: backend/runtime
+  - from: ../../audio-memory-build/standalone-20261031/model/base
+    to: backend/models/asr/base
+win:
+  target: nsis
+  signAndEditExecutable: false
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true

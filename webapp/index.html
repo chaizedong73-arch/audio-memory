@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 录音记忆</title>
+<style>
+:root {
+  --bg: #f8f7f4; --card: #ffffff; --fg: #2c2c2c; --dim: #8c8c8c;
+  --acc: #4f8cff; --ok: #2fbf71; --bad: #e5484d; --warn: #f5a623;
+  --border: #e8e6e1;
+}
+* { box-sizing: border-box; }
+body { margin:0; font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--fg); }
+.container { max-width:1200px; margin:0 auto; padding:24px; }
+header { background:var(--card); border-bottom:1px solid var(--border); padding:16px 24px; position:sticky; top:0; z-index:100; }
+header .logo { font-size:20px; font-weight:600; color:var(--acc); }
+nav { display:flex; gap:8px; margin-top:12px; }
+nav button { background:none; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:15px; color:var(--dim); transition:.15s; }
+nav button:hover { background:var(--bg); color:var(--fg); }
+nav button.active { background:var(--acc); color:white; }
+.page { display:none; }
+.page.active { display:block; }
+.grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:16px; }
+.card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; }
+.card:hover { border-color:var(--acc); }
+.tag { display:inline-block; padding:4px 10px; border-radius:12px; font-size:12px; margin-right:6px; margin-bottom:6px; }
+.tag.todo { background:#fef3c7; color:#d97706; }
+.tag.idea { background:#dbeafe; color:#2563eb; }
+.tag.fact { background:#d1fae5; color:#059669; }
+.tag.event { background:#f3f4f6; color:#6b7280; }
+.tag.dialogue { background:#fce7f3; color:#db2777; }
+.tag.emotion { background:#ede9fe; color:#7c3aed; }
+.speaker { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:500; }
+.speaker.self { background:#d1fae5; color:#059669; }
+.speaker.other { background:#fee2e2; color:#dc2626; }
+.speaker.unclear { background:#f3f4f6; color:#6b7280; }
+.quote { background:var(--bg); border-left:3px solid var(--dim); padding:12px 16px; margin:10px 0; border-radius:4px; font-size:14px; line-height:1.6; color:#4b5563; }
+.timestamp { color:var(--acc); cursor:pointer; font-size:13px; text-decoration:underline; }
+.timestamp:hover { color:#2563eb; }
+.time { color:var(--dim); font-size:13px; margin-bottom:8px; }
+.text { font-size:16px; line-height:1.5; margin-bottom:12px; }
+.status { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--dim); margin-top:10px; padding-top:10px; border-top:1px solid var(--border); }
+.status .dot { width:8px; height:8px; border-radius:50%; }
+.status .dot.pending { background:var(--warn); }
+.status .dot.verified { background:var(--ok); }
+.search-box { width:100%; padding:12px 16px; border:1px solid var(--border); border-radius:6px; font-size:15px; margin-bottom:20px; }
+.search-box:focus { outline:none; border-color:var(--acc); }
+.empty { text-align:center; padding:60px 20px; color:var(--dim); }
+.empty h3 { margin-bottom:10px; color:var(--fg); }
+.stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:12px; margin-bottom:24px; }
+.stat-card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; text-align:center; }
+.stat-card .num { font-size:28px; font-weight:600; color:var(--acc); }
+.stat-card .label { font-size:13px; color:var(--dim); margin-top:4px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">🎙 AI 录音记忆</div>
+  <nav>
+    <button class="active" onclick="showPage('today', this)">今天</button>
+    <button onclick="showPage('memory', this)">记忆库</button>
+    <button onclick="showPage('ask', this)">问记忆</button>
+    <button onclick="showPage('todo', this)">待办</button>
+    <button onclick="showPage('settings', this)">设置</button>
+  </nav>
+</header>
+
+<div class="container">
+  <!-- 今天页 -->
+  <div id="today" class="page active">
+    <div class="stats">
+      <div class="stat-card"><div class="num" id="today-count">0</div><div class="label">今日记忆</div></div>
+      <div class="stat-card"><div class="num" id="todo-count">0</div><div class="label">待办事项</div></div>
+      <div class="stat-card"><div class="num" id="idea-count">0</div><div class="label">想法灵感</div></div>
+      <div class="stat-card"><div class="num" id="pending-count">0</div><div class="label">待验证</div></div>
+    </div>
+    <h2>今日时间线</h2>
+    <div id="today-list" class="grid"></div>
+  </div>
+
+  <!-- 记忆库页 -->
+  <div id="memory" class="page">
+    <h2>记忆库</h2>
+    <input type="text" class="search-box" placeholder="搜索记忆内容..." oninput="filterMemory(this.value)">
+    <div style="margin-bottom:16px;">
+      <button class="tag event" onclick="filterByType('all')">全部</button>
+      <button class="tag todo" onclick="filterByType('todo')">待办</button>
+      <button class="tag idea" onclick="filterByType('idea')">想法</button>
+      <button class="tag fact" onclick="filterByType('fact')">事实</button>
+      <button class="tag event" onclick="filterByType('event')">事件</button>
+      <button class="tag dialogue" onclick="filterByType('dialogue')">对话</button>
+      <button class="tag emotion" onclick="filterByType('emotion')">情绪</button>
+    </div>
+    <div id="memory-list" class="grid"></div>
+  </div>
+
+  <!-- 问记忆页 -->
+  <div id="ask" class="page">
+    <h2>问记忆</h2>
+    <div class="card" style="margin-bottom:20px;">
+      <input type="text" class="search-box" placeholder="问我任何关于你生活的问题..." id="ask-input">
+      <button onclick="askMemory()" style="background:var(--acc); color:white; border:none; padding:12px 24px; border-radius:6px; cursor:pointer; font-size:15px;">提问</button>
+    </div>
+    <div id="ask-result"></div>
+  </div>
+
+  <!-- 待办页 -->
+  <div id="todo" class="page">
+    <h2>待办事项</h2>
+    <div id="todo-list"></div>
+  </div>
+
+  <!-- 设置页 -->
+  <div id="settings" class="page">
+    <h2>设置</h2>
+    <div class="card">
+      <h3>录音设备</h3>
+      <p>当前设备: <strong>Realtek 麦克风</strong></p>
+      <button style="background:var(--acc); color:white; border:none; padding:10px 20px; border-radius:6px; cursor:pointer;">更改设备</button>
+    </div>
+    <div class="card" style="margin-top:16px;">
+      <h3>分析状态</h3>
+      <p>✅ 录音运行中</p>
+      <p>✅ 转写服务正常</p>
+      <p>✅ 记忆提取正常</p>
+    </div>
+    <div class="card" style="margin-top:16px;">
+      <h3>数据导出</h3>
+      <button style="background:var(--ok); color:white; border:none; padding:10px 20px; border-radius:6px; cursor:pointer; margin-right:10px;">导出为 JSON</button>
+      <button style="background:var(--ok); color:white; border:none; padding:10px 20px; border-radius:6px; cursor:pointer;">导出为 Markdown</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let allMemories = [];
+let currentFilter = 'all';
+
+async function loadData() {
+  try {
+    const resp = await fetch('/api/memories');
+    allMemories = await resp.json();
+    renderToday();
+    renderMemory();
+    renderTodo();
+    updateStats();
+  } catch (e) {
+    console.error('加载数据失败:', e);
+  }
+}
+
+function renderToday() {
+  const today = new Date().toISOString().split('T')[0];
+  const todayMemories = allMemories.filter(m => m.date === today);
+  const list = document.getElementById('today-list');
+  list.innerHTML = todayMemories.length === 0
+    ? '<div class="empty"><h3>今天还没有记忆</h3><p>开始录音后，你的对话和想法会出现在这里</p></div>'
+    : todayMemories.map(m => renderCard(m)).join('');
+}
+
+function renderMemory() {
+  let filtered = currentFilter === 'all'
+    ? allMemories
+    : allMemories.filter(m => m.type === currentFilter);
+  const list = document.getElementById('memory-list');
+  list.innerHTML = filtered.length === 0
+    ? '<div class="empty"><h3>没有找到记忆</h3><p>试试其他筛选条件</p></div>'
+    : filtered.map(m => renderCard(m)).join('');
+}
+
+function renderTodo() {
+  const todos = allMemories.filter(m => m.type === 'todo');
+  const list = document.getElementById('todo-list');
+  list.innerHTML = todos.length === 0
+    ? '<div class="empty"><h3>没有待办事项</h3><p>你的待办会自动从对话中提取</p></div>'
+    : todos.map(m => `
+      <div class="card" style="margin-bottom:12px;">
+        <div class="time">${m.range}</div>
+        <div class="text">${m.text}</div>
+        <div class="quote">${m.quote}</div>
+        <div class="status">
+          <div class="dot ${m.speaker_verified ? 'verified' : 'pending'}"></div>
+          <span>${m.speaker_kind === 'self' ? '用户' : m.speaker_kind === 'other' ? '他人' : '未知'}</span>
+          ${!m.speaker_verified ? '<span style="margin-left:auto; color:var(--warn);">待验证</span>' : ''}
+        </div>
+      </div>
+    `).join('');
+}
+
+function renderCard(m) {
+  return `
+    <div class="card">
+      <div class="time">${m.range}</div>
+      <div>
+        <span class="tag ${m.type}">${m.type === 'todo' ? '待办' : m.type === 'idea' ? '想法' : m.type === 'fact' ? '事实' : m.type === 'event' ? '事件' : m.type === 'dialogue' ? '对话' : '情绪'}</span>
+        <span class="speaker ${m.speaker_kind}">${m.speaker_kind === 'self' ? '用户' : m.speaker_kind === 'other' ? '他人' : '未知'}</span>
+      </div>
+      <div class="text">${m.text}</div>
+      <div class="quote">
+        <div style="font-size:12px; color:var(--dim); margin-bottom:6px;">原文引用</div>
+        ${m.quote}
+      </div>
+      <div class="timestamp" onclick="alert('跳转到音频 ${m.range}')">📍 ${m.range}</div>
+      <div class="status">
+        <div class="dot ${m.speaker_verified ? 'verified' : 'pending'}"></div>
+        <span>${m.speaker_verified ? '已验证' : '待人工确认'}</span>
+      </div>
+    </div>
+  `;
+}
+
+function updateStats() {
+  const today = new Date().toISOString().split('T')[0];
+  const todayMemories = allMemories.filter(m => m.date === today);
+  document.getElementById('today-count').textContent = todayMemories.length;
+  document.getElementById('todo-count').textContent = allMemories.filter(m => m.type === 'todo').length;
+  document.getElementById('idea-count').textContent = allMemories.filter(m => m.type === 'idea').length;
+  document.getElementById('pending-count').textContent = allMemories.filter(m => !m.speaker_verified).length;
+}
+
+function filterMemory(query) {
+  const filtered = allMemories.filter(m =>
+    m.text.includes(query) || m.quote.includes(query)
+  );
+  const list = document.getElementById('memory-list');
+  list.innerHTML = filtered.map(m => renderCard(m)).join('');
+}
+
+function filterByType(type) {
+  currentFilter = type;
+  renderMemory();
+}
+
+function showPage(pageId, btn) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById(pageId).classList.add('active');
+  btn.classList.add('active');
+}
+
+function askMemory() {
+  const q = document.getElementById('ask-input').value;
+  if (!q.trim()) return;
+  const matches = allMemories.filter(m =>
+    m.text.includes(q) || m.quote.includes(q)
+  ).slice(0, 3);
+
+  const result = document.getElementById('ask-result');
+  result.innerHTML = matches.length === 0
+    ? '<div class="card"><p>没有找到相关记忆</p></div>'
+    : `
+      <div class="card">
+        <h3>找到 ${matches.length} 条相关记忆</h3>
+        ${matches.map(m => `
+          <div style="margin:16px 0; padding:12px; background:var(--bg); border-radius:6px;">
+            <div class="time">${m.range}</div>
+            <div>${m.text}</div>
+            <div class="quote" style="margin:8px 0 0;">${m.quote}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+}
+
+loadData();
+setInterval(loadData, 30000);
+</script>
+</body>
+</html>

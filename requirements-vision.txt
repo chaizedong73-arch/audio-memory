@@ -1,0 +1,6 @@
+# Local video/PPT extraction and phone camera transport.
+Pillow==13.0.0
+opencv-python-headless==5.0.0.93
+imageio-ffmpeg==0.7.0
+cryptography==50.0.2
+qrcode==8.2

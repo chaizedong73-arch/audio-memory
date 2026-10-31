@@ -1,0 +1,14 @@
+const {removeFixture}=require('./test-fixtures.cjs');const fs=require('node:fs/promises');const path=require('node:path');const os=require('node:os');const {spawn}=require('node:child_process');
+const {createServiceController}=require('./service-controller.cjs');
+(async()=>{const root=await fs.mkdtemp(path.join(os.tmpdir(),'audio-context-ui-'));const project=path.resolve(__dirname,'..');
+const controller=createServiceController({root,projectRoot:project,nodeExecutable:process.execPath,registryPath:path.join(__dirname,'registry.mjs'),registryDir:path.join(root,'registry')});
+try{const folder=path.join(root,'out','context-auto');await fs.mkdir(folder,{recursive:true});
+await fs.writeFile(path.join(folder,'state.json'),JSON.stringify({status:'ready',message:'情景已更新'}));
+const sixElements=Object.fromEntries(['time','place','people','cause','process','result'].map((k,i)=>[k,{value:['上午','教室','老师与同学','学习','讲解','待完成'][i],sources:['line:1']}]));
+await fs.writeFile(path.join(folder,'candidate.json'),JSON.stringify({candidate:{sixElements,narrative:'老师解释了课件内容，同学正在记录。'},sources:[{id:'line:1',text:'课堂测试字幕'}]}));
+const start=await controller.start();if(start.status!=='owned')throw new Error(start.message||start.status);
+const env={...process.env,AUDIO_MEMORY_ROOT:root,AUDIO_MEMORY_TEST_USER_DATA:path.join(root,'appdata'),AUDIO_MEMORY_DESKTOP_OPEN_CONTEXT:'1',AUDIO_MEMORY_DESKTOP_EXPECT:'老师解释了课件内容，同学正在记录。',AUDIO_MEMORY_DESKTOP_SCREENSHOT:path.resolve('..','..','audio-memory-build','desktop-context.png')};delete env.ELECTRON_RUN_AS_NODE;await fs.mkdir(env.AUDIO_MEMORY_TEST_USER_DATA);
+const child=spawn(path.join(__dirname,'node_modules','electron','dist','electron.exe'),['.'],{cwd:__dirname,env,windowsHide:true,stdio:'inherit'});const timer=setTimeout(()=>child.kill(),15000);
+const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve)});clearTimeout(timer);if(code!==0)throw new Error('Context UI exit '+code);
+console.log('PASS: Electron displays six elements and narrative through real Python gateway');
+}finally{if(controller.isOwned())await controller.stop();await removeFixture(root)}})().catch(e=>{console.error(e.message);process.exitCode=1});

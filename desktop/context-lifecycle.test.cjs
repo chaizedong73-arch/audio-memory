@@ -1,0 +1,10 @@
+const fs=require('node:fs/promises');const os=require('node:os');const path=require('node:path');const {spawn}=require('node:child_process');const {removeFixture}=require('./test-fixtures.cjs');
+(async()=>{const root=await fs.mkdtemp(path.join(os.tmpdir(),'audio-context-lifecycle-'));
+try{const appdata=path.join(root,'appdata');await fs.mkdir(appdata);
+const env={...process.env,AUDIO_MEMORY_TEST_USER_DATA:appdata,AUDIO_MEMORY_TEST_REGISTRY:path.join(__dirname,'registry.mjs'),AUDIO_MEMORY_ROOT:root,[process.argv.includes('--gateway-stop') ? 'AUDIO_MEMORY_DESKTOP_CONTEXT_GATEWAY_STOP_TEST' : process.argv.includes('--close') ? 'AUDIO_MEMORY_DESKTOP_CONTEXT_CLOSE_TEST' : 'AUDIO_MEMORY_DESKTOP_CONTEXT_TEST']:'1'};delete env.ELECTRON_RUN_AS_NODE;
+const child=spawn(path.join(__dirname,'node_modules','electron','dist','electron.exe'),['.'],{cwd:__dirname,env,windowsHide:true,stdio:'inherit'});const timer=setTimeout(()=>child.kill(),30000);
+const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve)});clearTimeout(timer);if(code!==0)throw new Error('Context UI lifecycle exit '+code);
+const state=JSON.parse(await fs.readFile(path.join(root,'out','context-auto','state.json'),'utf8'));if(state.status!=='waiting')throw new Error('Unexpected context state '+state.status);
+const records=JSON.parse(await fs.readFile(path.join(appdata,'process-registry','process-registry.json'),'utf8')).processes;if(records.length!==2||records.some(x=>x.status!=='exited'))throw new Error('Processes not unregistered');
+console.log('PASS: UI starts and '+(process.argv.includes('--gateway-stop')?'stops after gateway shutdown':process.argv.includes('--close')?'closes with':'stops')+' registered automatic context without an API call');
+}finally{await removeFixture(root)}})().catch(e=>{console.error(e.message);process.exitCode=1});

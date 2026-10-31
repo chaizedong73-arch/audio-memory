@@ -1,0 +1,12 @@
+const { removeFixture } = require('./test-fixtures.cjs');
+const fs=require('node:fs/promises');const os=require('node:os');const path=require('node:path');const {spawn}=require('node:child_process');
+(async()=>{const root=await fs.mkdtemp(path.join(os.tmpdir(),'audio-gui-start-'));
+try{const home=path.join(root,'home'),appdata=path.join(root,'appdata');await fs.mkdir(home);await fs.mkdir(appdata);
+const env={...process.env,AUDIO_MEMORY_TEST_USER_DATA:appdata,AUDIO_MEMORY_TEST_REGISTRY:path.join(__dirname,'registry.mjs'),AUDIO_MEMORY_ROOT:root,[process.argv.includes('--close') ? 'AUDIO_MEMORY_DESKTOP_AUTOCLOSE_TEST' : 'AUDIO_MEMORY_DESKTOP_AUTOSTART_TEST']:'1'};delete env.ELECTRON_RUN_AS_NODE;
+const child=spawn(path.join(__dirname,'node_modules','electron','dist','electron.exe'),['.'],{cwd:__dirname,env,windowsHide:true,stdio:'inherit'});
+const timer=setTimeout(()=>child.kill(),25000);const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve)});clearTimeout(timer);
+if(code!==0)throw new Error('UI lifecycle test exit '+code);
+const registry=JSON.parse(await fs.readFile(path.join(appdata,'process-registry','process-registry.json'),'utf8'));
+if(registry.processes.at(-1).status!=='exited')throw new Error('Gateway registry entry not closed');
+console.log('PASS: Electron UI starts, connects and '+(process.argv.includes('--close')?'closes with':'stops')+' its registered Python gateway');
+}finally{await removeFixture(root)}})().catch(e=>{console.error(e.message);process.exitCode=1});
