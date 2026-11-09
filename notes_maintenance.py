@@ -28,6 +28,21 @@ def save(file, data):
     os.replace(temp, file)
 
 
+def dispatch_state(toolbox_root, job):
+    """Expose only the state of a known classroom job from the host adapter."""
+    if not re.fullmatch(r'classroom-[a-f0-9]{32}',str(job)): return ''
+    host=Path(toolbox_root).resolve()
+    if not (host/'AiWorkbench.Contracts.dll').is_file(): return ''
+    folder=(host/'modules'/'collaboration-canvas'/'data'/'workbuddy-dispatch').resolve()
+    if not folder.is_relative_to(host): return ''
+    receipt=(folder/(job+'.json')).resolve()
+    if not receipt.is_relative_to(folder) or not receipt.is_file() or receipt.stat().st_size>=1024*1024:return ''
+    try:
+        result=json.loads(receipt.read_text(encoding='utf-8-sig'))
+        return 'waiting-permission' if result.get('state')=='waiting-permission' else ''
+    except (OSError,ValueError,AttributeError):return ''
+
+
 def validate(config):
     root = Path(config.get('notesRoot', ''))
     if not config.get('notesRoot') or not root.is_absolute() or not root.is_dir():
@@ -38,45 +53,7 @@ def validate(config):
     return root.resolve()
 
 
-def collect(root, since, processed, limit=24, cache=None, require_review=False):
-    from transcript_corrections import effective, load
-    from transcript_quality import suspected_prompt_echo
-    cache = {} if cache is None else cache
-    corrections = load(root); sources = set()
-    for day in (dt.datetime.now(), dt.datetime.now()-dt.timedelta(days=1)):
-        name = day.strftime('%Y%m%d'); sources.add(root/'out'/name/'timeline.jsonl')
-        sources.update((root/'out').glob('cloud-asr-*/'+name+'/timeline.jsonl'))
-    sources.update(Path(record['sourceFile']) for record in corrections.get('records', {}).values() if record.get('revision', 0)>0)
-    correction_file=root/'transcript-corrections.json'; revision=correction_file.stat().st_mtime_ns if correction_file.exists() else 0
-    for old in set(cache)-{str(source) for source in sources}:del cache[old]
-    grouped={}
-    # Local history remains available when the user switches to cloud; prefer its higher-quality version per WAV.
-    for source in sorted(sources, key=lambda p: (p.parent.parent.name.startswith('cloud-asr-'), str(p))):
-        if not source.resolve().is_relative_to((root/'out').resolve()) or not source.exists():continue
-        stamp=(source.stat().st_mtime_ns,source.stat().st_size,revision,since)
-        item=cache.get(str(source))
-        if not item or item['stamp']!=stamp:
-            parsed=[]
-            with source.open(encoding='utf-8') as stream:
-                for line in stream:
-                    try:
-                        row=json.loads(line)
-                        if float(row.get('ts',0))>=since-90 and row.get('text','').strip():
-                            current=effective(row,source,corrections)
-                            if not suspected_prompt_echo(current.get('text','')):parsed.append(current)
-                    except (ValueError,TypeError,KeyError):continue
-            item={'stamp':stamp,'rows':parsed};cache[str(source)]=item
-        by_file={}
-        for row in item['rows']:by_file.setdefault(str(row.get('file','')),[]).append(row)
-        for file,parts in by_file.items():
-            first=parts[0];text='\n'.join(part['text'] for part in parts)
-            grouped[file]={'key':file,'file':file,'hash':hashlib.sha256(text.encode()).hexdigest(),'text':text,'t':first.get('t'),
-                'date':first.get('date'),'start':min(p['start'] for p in parts),'end':max(p['end'] for p in parts),'source':str(source)}
-    rows = [row for row in sorted(grouped.values(),key=lambda r:(r['file'],r['start'])) if processed.get(row['key'])!=row['hash']]
-    if require_review:
-        reviews=read(root/'subtitle-reviews.json',{'items':{}}).get('items',{})
-        rows=[row for row in rows if reviews.get(row['key'],{}).get('status')=='screened' and reviews[row['key']].get('hash')==row['hash'] and Path(reviews[row['key']].get('source','')).resolve()==Path(row['source']).resolve()]
-    return rows[:limit]
+from material_queries import collect
 
 
 def note_snapshot(root, cache=None):
@@ -253,4 +230,5 @@ def watch(bridge, root=HERE):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(); parser.add_argument('--bridge', required=True)
-    args = parser.parse_args(); watch(Path(args.bridge))
+    parser.add_argument('--root', type=Path, default=HERE)
+    args = parser.parse_args(); watch(Path(args.bridge), root=args.root.resolve())

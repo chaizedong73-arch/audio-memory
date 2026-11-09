@@ -34,3 +34,24 @@ backups/
 dist/
 
 node_modules/
+
+# Mobile build keys, machine paths, private sync/verification fixtures.
+android/build/
+android/local.properties
+.gradle/
+*.keystore
+test-artifacts/
+
+# Local-only credentials, build runtimes, model weights and test audio.
+.env.*
+*.p12
+*.pfx
+*.exe
+*.bin
+*.onnx
+*.gguf
+*.safetensors
+build/
+_rectest/
+android/电脑AI接入.json
+tools/android/platform-tools/

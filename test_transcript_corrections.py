@@ -33,6 +33,17 @@ class CorrectionTests(unittest.TestCase):
         run('batch', self.root, publisher=lambda p: None)
         self.assertEqual(load(self.root)['records'][self.key]['revision'], 1)
 
+    def test_submitted_annotation_survives_relocation(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as folder:
+            new=Path(folder);shutil.copytree(self.root/'out',new/'out');shutil.copy2(self.root/'transcript-corrections.json',new/'transcript-corrections.json')
+            run('batch',new,publisher=lambda p:None)
+            result=load(new)
+            self.assertEqual(result['records'][self.key]['text'],'因为我们要找到区间啊')
+            self.assertEqual(result['annotations'][0]['recordId'],self.key)
+            self.assertEqual((new/'out'/'20261023'/'timeline.jsonl').read_bytes(),self.original)
+            self.assertEqual(load(self.root)['annotations'][0]['status'],'submitted')
+
     def test_overlap_is_not_applied(self):
         state = load(self.root); state['annotations'].append({**self.note, 'id': 'two'})
         save(state, self.root)

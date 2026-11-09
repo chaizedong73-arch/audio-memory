@@ -7,12 +7,12 @@ const { readTranscripts } = require('./gateway-client.cjs');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 function removeStopDirectory(dir) {
   const real = fs.realpathSync(dir), temp = fs.realpathSync(os.tmpdir());
-  if (path.dirname(real).toLowerCase() !== temp.toLowerCase() || !/^audio-memory-(gateway|context|recording|visual|camera)-/.test(path.basename(real))) throw new Error('Invalid temporary directory');
+  if (path.dirname(real).toLowerCase() !== temp.toLowerCase() || !/^audio-memory-(gateway|context|recording|visual|camera|mobile-sync)-/.test(path.basename(real))) throw new Error('Invalid temporary directory');
   fs.rmSync(real,{recursive:true,force:true});
 }
 
 function createServiceController({root, projectRoot, nodeExecutable, registryPath, registryDir, registryStore = registryDir, kind = 'gateway', pythonExecutable, transcriptionSettings = () => ({mode:'local'})}) {
-  if (!['gateway','context','recording','visual','camera'].includes(kind)) throw new Error('Unknown service');
+  if (!['gateway','context','recording','visual','camera','mobile-sync'].includes(kind)) throw new Error('Unknown service');
   let processHandle = null;
   let stopDirectory = null;
   let starting = false;
@@ -39,7 +39,7 @@ function createServiceController({root, projectRoot, nodeExecutable, registryPat
       const logs = path.join(root,'out','ui'); fs.mkdirSync(logs,{recursive:true});
       const log = fs.openSync(path.join(logs,kind+'.log'),'a');
       const name = 'Audio-Memory-' + kind + '-' + crypto.randomUUID();
-      const command = kind === 'gateway' ? [path.join(projectRoot,'ai_material_gateway.py'),'serve','--root',root,'--port','8768','--stop-file',stopFile] : kind === 'context' ? [path.join(projectRoot,'context_auto.py'),'--root',root,'--stop-file',stopFile,'--ready-file',path.join(stopDirectory,'ready')] : kind === 'visual' ? [path.join(projectRoot,'visual_worker.py'),'--root',root,'--watch','--stop-file',stopFile,'--ready-file',path.join(stopDirectory,'ready')] : kind === 'camera' ? [path.join(projectRoot,'scene_capture.py'),'--root',root,'--stop-file',stopFile,'--ready-file',path.join(stopDirectory,'ready')] : [path.join(projectRoot,'run_core.py'),'--root',root,'--stop-file',stopFile,'--ready-file',path.join(stopDirectory,'ready'),'--registry',registryPath,'--registry-executable',nodeExecutable,'--parent-registered-file',path.join(stopDirectory,'parent-registered')];
+      const command = kind === 'mobile-sync' ? [path.join(projectRoot,'mobile_sync.py'),'--root',root,'--stop-file',stopFile,'--ready-file',path.join(stopDirectory,'ready')] : kind === 'gateway' ? [path.join(projectRoot,'ai_material_gateway.py'),'serve','--root',root,'--port',String(process.env.AUDIO_MEMORY_TEST_GATEWAY_PORT || 8768),'--stop-file',stopFile] : kind === 'context' ? [path.join(projectRoot,'context_auto.py'),'--root',root,'--stop-file',stopFile,'--ready-file',path.join(stopDirectory,'ready')] : kind === 'visual' ? [path.join(projectRoot,'visual_worker.py'),'--root',root,'--watch','--stop-file',stopFile,'--ready-file',path.join(stopDirectory,'ready')] : kind === 'camera' ? [path.join(projectRoot,'scene_capture.py'),'--root',root,'--stop-file',stopFile,'--ready-file',path.join(stopDirectory,'ready')] : [path.join(projectRoot,'run_core.py'),'--root',root,'--stop-file',stopFile,'--ready-file',path.join(stopDirectory,'ready'),'--registry',registryPath,'--registry-executable',nodeExecutable,'--parent-registered-file',path.join(stopDirectory,'parent-registered')];
       let cloudEnv={};
       if(kind==='recording') {
         const settings=transcriptionSettings();
@@ -54,12 +54,14 @@ function createServiceController({root, projectRoot, nodeExecutable, registryPat
         }
       }
       try {
-        processHandle = spawn(nodeExecutable,[registryPath,'run','--owner','GPT','--name',name,'--desc',kind === 'gateway' ? '录音记忆材料网关' : kind === 'context' ? '录音记忆自动情景' : kind === 'visual' ? '录音记忆录像分析' : kind === 'camera' ? '录音记忆手机采集' : '录音记忆录音与转写','--',python,...command],{
-          cwd:projectRoot,windowsHide:true,stdio:['ignore',log,log],env:{...process.env,...cloudEnv,ELECTRON_RUN_AS_NODE:'1',AUDIO_MEMORY_PROCESS_REGISTRY_DIR:registryDir,PYTHONUTF8:'1'}
+        processHandle = spawn(nodeExecutable,[registryPath,'run','--owner','GPT','--name',name,'--desc',kind === 'mobile-sync' ? '录音记忆手机同步接收' : kind === 'gateway' ? '录音记忆材料网关' : kind === 'context' ? '录音记忆自动情景' : kind === 'visual' ? '录音记忆录像分析' : kind === 'camera' ? '录音记忆手机采集' : '录音记忆录音与转写','--',python,...command],{
+          cwd:projectRoot,windowsHide:true,stdio:['ignore',log,log],env:{...process.env,...cloudEnv,ELECTRON_RUN_AS_NODE:'1',AUDIO_MEMORY_REGISTRY_PATH:registryPath,AUDIO_MEMORY_REGISTRY_EXECUTABLE:nodeExecutable,AUDIO_MEMORY_PROCESS_REGISTRY_DIR:registryDir,PYTHONUTF8:'1'}
         });
       } finally { fs.closeSync(log); }
       let spawnError = null; processHandle.once('error', error => { spawnError = error; });
-      for (let i=0;i<100;i++) {
+      // Registry startup and indexing existing recordings can exceed ten seconds.
+      const startupDeadline = Date.now() + (kind === 'gateway' ? 60000 : kind === 'mobile-sync' ? 30000 : 10000);
+      while (Date.now() < startupDeadline) {
         if (spawnError || !alive()) {
           clear();
           return { status:'error', message:kind === 'gateway' ? '网关启动失败，请查看日志' : kind === 'context' ? '情景启动失败或已经运行，请查看日志' : kind === 'visual' ? '录像处理启动失败或已经运行，请查看日志' : kind === 'camera' ? '手机接收启动失败，请检查课堂模式和日志' : '录音启动失败，请查看日志' };
@@ -76,7 +78,7 @@ function createServiceController({root, projectRoot, nodeExecutable, registryPat
         await delay(100);
       }
       await stop();
-      return { status:'error', message:kind === 'gateway' ? '网关启动超时，请查看日志' : kind === 'context' ? '情景启动超时，请查看日志' : kind === 'visual' ? '录像处理启动超时，请查看日志' : kind === 'camera' ? '手机接收启动超时，请查看日志' : '未收到麦克风音频，请检查设备和日志' };
+      return { status:'error', message:kind === 'gateway' ? '网关启动超时，请查看日志' : kind === 'context' ? '情景启动超时，请查看日志' : kind === 'visual' ? '录像处理启动超时，请查看日志' : kind === 'mobile-sync' ? '手机同步接收启动超时，请查看日志' : kind === 'camera' ? '手机接收启动超时，请查看日志' : '未收到麦克风音频，请检查设备和日志' };
     } finally { starting=false; }
   }
   async function stop() {

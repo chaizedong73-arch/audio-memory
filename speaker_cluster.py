@@ -25,6 +25,7 @@
         - 阈值从长块的相似度分布里取，而不是拍脑袋
         - 短块（5~15s）在聚类后按最近长块簇分配
 """
+from data_location import data_root as default_data_root
 import os, sys, json, glob, argparse, datetime
 import numpy as np
 
@@ -240,8 +241,8 @@ def calibrate_threshold(anchor_vecs, profiles, lo=0.30, hi=0.80):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--record", default=os.path.join(HERE, "record"))
-    ap.add_argument("--profiles", default=os.path.join(HERE, "profiles.json"))
+    ap.add_argument("--record", default=os.path.join(str(default_data_root()), "record"))
+    ap.add_argument("--profiles", default=os.path.join(str(default_data_root()), "profiles.json"))
     ap.add_argument("--limit", type=int, default=40, help="最多取多少个文件（试跑用）")
     ap.add_argument("--threshold", type=float, default=None)
     ap.add_argument("--dump", default=None, help="把块和标签存到这个 json")

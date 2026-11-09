@@ -1,5 +1,6 @@
 """Initialize the existing local material database without replacing user data."""
 from __future__ import annotations
+from data_location import data_root as default_data_root
 
 import argparse
 from contextlib import closing
@@ -12,7 +13,11 @@ SCHEMA_VERSION = 2
 
 
 def database_path(root: Path = ROOT) -> Path:
-    return Path(root) / 'out' / 'material-index' / 'materials.sqlite3'
+    root = Path(root)
+    path = root / 'out' / 'material-index' / 'materials.sqlite3'
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise ValueError('material database outside data root')
+    return path
 
 
 def initialize(root: Path = ROOT) -> Path:
@@ -88,6 +93,47 @@ def list_materials(root: Path = ROOT, kind: str | None = None, limit: int = 100,
     return {'items': items, 'total': total, 'nextOffset': offset + len(items) if offset + len(items) < total else None}
 
 
+def read_material(material_id: str, root: Path = ROOT) -> tuple[dict, bytes | dict]:
+    """Read a registered material by identity, never by a caller-supplied path."""
+    item = get_material(material_id, root)
+    if item is None:
+        raise FileNotFoundError('Material not found')
+    base = Path(root).resolve()
+    source = (base / item['source']).resolve()
+    if not source.is_relative_to(base) or not source.is_file():
+        raise FileNotFoundError('Material source unavailable')
+    if item['kind'] == 'transcript_segment':
+        record = item['metadata'].get('record')
+        if not isinstance(record, dict):
+            raise ValueError('Transcript record unavailable')
+        return item, record
+    return item, source.read_bytes()
+
+
+def latest_classroom_snapshot(root: Path) -> dict:
+    """Read a consistent classroom export without exposing database access to consumers."""
+    path = database_path(root).resolve()
+    if not path.is_file(): raise FileNotFoundError('Material database is not initialized')
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=10)) as db:
+        db.execute('BEGIN')
+        session = db.execute('SELECT id,video_hash,start_at,end_at FROM sessions ORDER BY rowid DESC LIMIT 1').fetchone()
+        if not session: raise ValueError('SQLite 材料库没有硬桥接会话')
+        sid = session[0]
+        slides = db.execute('SELECT slide_id,asset_hash,first_seen FROM slides WHERE session_id=? ORDER BY first_seen', (sid,)).fetchall()
+        segments = db.execute('SELECT line_no,text,ts,ppt_id,ppt_offset FROM segments WHERE session_id=? ORDER BY line_no', (sid,)).fetchall()
+        targets = db.execute('SELECT slide_id,note_path,method,state FROM ppt_note_candidates WHERE session_id=?', (sid,)).fetchall()
+        return {'session': session, 'slides': slides, 'segments': segments, 'targets': targets}
+
+
+def ppt_note_candidates(root: Path, session_id: str, slide_id: str) -> list[dict]:
+    path = database_path(root).resolve()
+    if not path.is_file():
+        return []
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=10)) as db:
+        rows = db.execute('SELECT note_path,method,score,state FROM ppt_note_candidates WHERE session_id=? AND slide_id=? ORDER BY score DESC LIMIT 3', (session_id, slide_id)).fetchall()
+    return [dict(zip(('path', 'method', 'score', 'state'), row)) for row in rows]
+
+
 def list_module_status(root: Path = ROOT) -> list[dict]:
     path = database_path(root).resolve()
     if not path.is_file(): raise FileNotFoundError('Material database is not initialized')
@@ -98,6 +144,6 @@ def list_module_status(root: Path = ROOT) -> list[dict]:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Initialize the local materials database')
-    parser.add_argument('--root', type=Path, default=ROOT)
+    parser.add_argument('--root', type=Path, default=default_data_root())
     args = parser.parse_args()
     print(json.dumps({'database': str(initialize(args.root)), 'schemaVersion': SCHEMA_VERSION}, ensure_ascii=False))

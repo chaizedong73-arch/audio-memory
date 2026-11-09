@@ -6,6 +6,9 @@ import os
 from pathlib import Path
 import time
 import urllib.request
+from urllib.parse import urlparse
+from cloud_usage import record_usage, UsageRecordingError
+from material_exchange import MaterialExchange
 import wave, uuid
 
 from cloud_asr_trial import MODEL, payload
@@ -21,6 +24,7 @@ def transcribe(file, root, config_path, send=None):
     model=os.environ.get('AUDIO_MEMORY_ASR_MODEL',MODEL)
     if protocol=='ark_audio' and model.lower()=='doubao-seed-2.0-mini':model=MODEL
     body['model']=model
+    official=False
     if send is None:
         if os.environ.get('AUDIO_MEMORY_ASR_URL'):
             base=os.environ['AUDIO_MEMORY_ASR_URL'].rstrip('/');key=os.environ.get('AUDIO_MEMORY_ASR_KEY','')
@@ -37,8 +41,20 @@ def transcribe(file, root, config_path, send=None):
         else:raise ValueError('unsupported protocol')
         def send(request):
             with urllib.request.urlopen(request,timeout=60) as response:return json.load(response)
-        result=send(req)
-    else:result=send(body)
+        official=urlparse(base).hostname in ('ark.cn-beijing.volces.com','ark.cn-beijing.volcengineapi.com')
+        try:
+            result=send(req)
+        except Exception as error:
+            record_usage(root,file=file,model=model,protocol=protocol,duration=duration,error=error,official=official)
+            raise
+    else:
+        try:
+            result=send(body)
+        except Exception as error:
+            record_usage(root,file=file,model=model,protocol=protocol,duration=duration,error=error)
+            raise
+    # Even empty or malformed responses may have consumed paid tokens.
+    record_usage(root,file=file,model=model,protocol=protocol,duration=duration,result=result,official=official)
     if protocol=='openai_transcription':text=result.get('text','')
     else:
         choice=result['choices'][0]
@@ -47,21 +63,23 @@ def transcribe(file, root, config_path, send=None):
     if not isinstance(text,str):raise ValueError('invalid response')
     start=dt.datetime.strptime(file.stem[:15],'%Y%m%d_%H%M%S');offset=(start-start.replace(hour=0,minute=0,second=0,microsecond=0)).total_seconds()
     row={'start':offset,'end':offset+duration,'ts':start.timestamp(),'t':start.strftime('%H:%M:%S'),'date':start.strftime('%Y-%m-%d'),'file':file.stem,'text':text.strip(),'model':model,'timing':'whole_chunk_not_word_aligned'}
-    day=root/'out'/('cloud-asr-'+start.strftime('%Y%m%d'));day.mkdir(parents=True,exist_ok=True)
-    target=day/'timeline.jsonl'
     if text.strip():
-        with target.open('a',encoding='utf-8') as output:output.write(json.dumps(row,ensure_ascii=False)+'\n')
+        MaterialExchange(root).append_transcripts(start.strftime('%Y%m%d'), [row], cloud=True)
     return row
 
 def run(root,config_path,stop_file):
     root=Path(root);stop_file=Path(stop_file);cutoff=time.time();completed=set();attempts={}
     print('云端音频转写已启动；只处理本次启动后的音频。',flush=True)
     while True:
-        for file in sorted((root/'record').glob('*.wav')):
+        for name in MaterialExchange(root).recordings(('.wav',)):
+            file = Path(name)
             if file.stat().st_mtime<cutoff or file.name in completed or attempts.get(file.name,0)>=3:continue
             try:
                 row=transcribe(file,root,config_path);completed.add(file.name)
                 print(json.dumps({'file':file.name,'characters':len(row['text'])},ensure_ascii=False),flush=True)
+            except UsageRecordingError:
+                completed.add(file.name)
+                print('费用账本写入失败：该段不自动重试，原音频已保留，请检查磁盘和日志。',flush=True)
             except Exception as error:
                 attempts[file.name]=attempts.get(file.name,0)+1
                 print('云端转写失败：'+type(error).__name__+'，音频已保留。',flush=True)

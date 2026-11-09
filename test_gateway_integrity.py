@@ -11,6 +11,15 @@ from ai_material_gateway import build, handler
 
 
 class IntegrityTests(unittest.TestCase):
+    def test_ocr_catalog_cannot_read_a_path_as_a_hash(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);image=root/'out'/'scene'/'ppt'/'run'/'page.png';image.parent.mkdir(parents=True);image.write_bytes(b'image')
+            catalog=root/'out'/'ppt-concepts';catalog.mkdir()
+            (catalog/'catalog.json').write_text(json.dumps({'pages':{str(image):{'hash':'../private'}}}),encoding='utf-8')
+            (root/'out'/'private.json').write_text(json.dumps({'text':'sensitive'}),encoding='utf-8')
+            manifest=build(root,write=False)
+            self.assertFalse(any(item.get('kind')=='ppt_ocr' for item in manifest['materials']))
+
     def test_local_token_required_for_reads_and_writes(self):
         with tempfile.TemporaryDirectory() as d:
             server = ThreadingHTTPServer(('127.0.0.1', 0), handler(Path(d), token='test-token'))

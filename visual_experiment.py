@@ -70,8 +70,6 @@ def record(root,run_dir,job,result):
  stamp=datetime.datetime.now().strftime('%Y-%m-%dT%H:%M');tag=datetime.datetime.now().strftime('%m-%d %H:%M')
  content=f'<!--@SYS {stamp}-->\n'+ '\n'.join(docs)+f'\n〔SYS·{tag}〕\n<!--/@SYS-->\n'
  ledger.write_text(content,encoding='utf-8')
- vault=Path.home()/'OneDrive/notes/obsidian：朝闻道/日积月累/项目/重要不紧急/AI录音记忆系统'
- if root.resolve()==Path(__file__).resolve().parent and vault.exists():(vault/'视觉试验场-实验总记录.md').write_text(content,encoding='utf-8')
  return str(ledger)
 
 def tolerant_content(content):
@@ -84,7 +82,7 @@ def tolerant_content(content):
 
 if __name__=='__main__':
  import argparse
- parser=argparse.ArgumentParser();parser.add_argument('--finalize',required=True);args=parser.parse_args()
- root=Path(__file__).resolve().parent;target=Path(args.finalize).resolve()
+ parser=argparse.ArgumentParser();parser.add_argument('--finalize',required=True);parser.add_argument('--root',type=Path,default=Path(__file__).resolve().parent);args=parser.parse_args()
+ root=args.root.resolve();target=Path(args.finalize).resolve()
  if not target.is_relative_to((root/'out/visual-vocabulary/runs').resolve()) or target.name!='request.json':raise ValueError('记录路径无效')
  record(root,target.parent,json.loads(target.read_text(encoding='utf-8')),json.loads(target.with_name('result.json').read_text(encoding='utf-8')))

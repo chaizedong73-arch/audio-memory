@@ -11,6 +11,7 @@
 用法:
     python extract_loop.py --out out --minutes 10 --every 600
 """
+from data_location import data_root as default_data_root
 import os, sys, time, subprocess, argparse, glob
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -41,11 +42,11 @@ def run_speaker_tag(record_dir, outroot, threshold=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=os.path.join(HERE, "out"))
-    ap.add_argument("--record", default=os.path.join(HERE, "record"))
+    ap.add_argument("--out", default=os.path.join(str(default_data_root()), "out"))
+    ap.add_argument("--record", default=os.path.join(str(default_data_root()), "record"))
     ap.add_argument("--minutes", type=int, default=10)
     ap.add_argument("--every", type=float, default=600.0)
-    ap.add_argument("--winlog", default=os.path.join(HERE, "winlog"))
+    ap.add_argument("--winlog", default=os.path.join(str(default_data_root()), "winlog"))
     ap.add_argument("--no-speaker", action="store_true", help="跳过说话人打标")
     ap.add_argument("--speaker-threshold", type=float, default=None)
     ap.add_argument("--once", action="store_true")

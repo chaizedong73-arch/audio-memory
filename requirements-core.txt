@@ -6,3 +6,6 @@ opencc-python-reimplemented==0.1.7
 soxr==1.1.0
 psutil==7.2.2
 av==19.0.2
+
+# Private HTTPS phone sync receiver.
+cryptography==50.0.2

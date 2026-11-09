@@ -89,9 +89,8 @@ class StopTests(unittest.TestCase):
                  patch.object(run_core.subprocess,'run',return_value=type('Result',(),{'returncode':0})()), \
                  patch.object(run_core.time,'sleep',side_effect=KeyboardInterrupt):
                 run_core.main()
-            self.assertIn(str(data/'record'),commands[0])
-            self.assertIn(str(data/'record'),commands[1])
-            self.assertIn(str(data/'out'),commands[1])
+            self.assertIn('--root',commands[0]); self.assertIn(str(data),commands[0])
+            self.assertIn('--root',commands[1]); self.assertIn(str(data),commands[1])
             self.assertIn(str(data),commands[2])
 
 

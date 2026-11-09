@@ -2,7 +2,8 @@
 import argparse,json,time
 from pathlib import Path
 from notes_maintenance import HERE,read,save
-from transcript_corrections import locked,load,save as save_overlay,effective,normalize,record_key,publish_reviewed
+from material_exchange import MaterialExchange
+from transcript_corrections import locked,load,save as save_overlay,effective,normalize,record_key,lookup_record,publish_reviewed
 from subtitle_maintenance import digest,publish_confirmations
 
 def decide(root,identifier,action,term=''):
@@ -14,13 +15,12 @@ def decide(root,identifier,action,term=''):
   if action=='reject':item.update(status='rejected',updatedAt=time.time());save(root/'subtitle-reviews.json',reviews);publish_confirmations(root,reviews);return
   term=term.strip()
   if not term or len(term)>100 or any(c in term for c in '\r\n'):raise ValueError('请填写单个符号或术语，最多100字')
-  source=Path(item['source']).resolve()
-  if not source.is_relative_to((root/'out').resolve()) or source.name!='timeline.jsonl':raise ValueError('字幕来源无效')
-  current_rows={}
+  source=MaterialExchange(root).transcript_source(item['source'], allow_relocated=True)
+  state=load(root);current_rows={}
   for line in source.read_text(encoding='utf-8').splitlines():
-   try:row=json.loads(line);current_rows[record_key(source,row)]=row
+   try:row=json.loads(line);current_rows[lookup_record(state,source,row)[0]]=row
    except (ValueError,KeyError):continue
-  state=load(root);parts=item['baseParts'];ids={p['id'] for p in parts}
+  parts=item['baseParts'];ids={p['id'] for p in parts}
   if any(a.get('recordId') in ids for a in state.get('annotations',[])):raise ValueError('已有人工批注，先处理批注；未覆盖')
   output=[]
   import re
@@ -38,11 +38,17 @@ def decide(root,identifier,action,term=''):
   terms['items']=[t for t in terms['items'] if not (t.get('contextKey')==entry['contextKey'] and t.get('term')==term)]+[entry];save(root/'subtitle-terms.json',terms)
   save(root/'subtitle-reviews.json',reviews);publish_confirmations(root,reviews)
  publish_reviewed(source,root)
- if root.resolve()==HERE.resolve():
-  from classroom_materials import publish
-  publish(source.parent)
+ from classroom_materials import publish
+ publish(source.parent,root=root)
 
 if __name__=='__main__':
- parser=argparse.ArgumentParser();parser.add_argument('--request',required=True);args=parser.parse_args();req=Path(args.request).resolve()
- if req.parent!=(HERE/'out/subtitle-decisions').resolve():raise ValueError('确认请求位置无效')
- value=read(req);decide(HERE,value['id'],value['action'],value.get('term',''));req.unlink()
+ import sys
+ parser=argparse.ArgumentParser();source=parser.add_mutually_exclusive_group(required=True);source.add_argument('--request');source.add_argument('--stdin',action='store_true');parser.add_argument('--root',type=Path,default=HERE);args=parser.parse_args();root=args.root.resolve()
+ if args.stdin:
+  value=json.load(sys.stdin)
+ else:
+  req=Path(args.request).resolve()
+  if req.parent!=(root/'out/subtitle-decisions').resolve():raise ValueError('确认请求位置无效')
+  value=read(req)
+ decide(root,value['id'],value['action'],value.get('term',''))
+ if not args.stdin:req.unlink()

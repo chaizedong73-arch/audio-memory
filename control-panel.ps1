@@ -4,6 +4,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 $root = $PSScriptRoot
+$dataRoot = if ($env:AUDIO_MEMORY_ROOT) { $env:AUDIO_MEMORY_ROOT } else { Join-Path (Split-Path -Parent $root) '数据' }
 $python = Join-Path $root 'runtime\python.exe'
 if (-not (Test-Path -LiteralPath $python)) { $python = Join-Path $root '.venv\Scripts\python.exe' }
 $script:closing = $false
@@ -43,7 +44,7 @@ $openData=Button '打开资料目录' 32 424 150
 $openLogs=Button '打开日志' 194 424 115
 $message=Label '关闭窗口时会请求停止已启动的功能。' 324 432 340 40 9
 function Add-Component($id,$scriptName,$state,$start,$stop,$extra){
- $script:components[$id]=@{Name=$scriptName;State=$state;Start=$start;Stop=$stop;Extra=$extra;Process=$null;Stopping=$false;StopFile=(Join-Path $stopRoot ($id+'.stop'));Log=(Join-Path $root ('out\ui\'+$id+'.log'))}
+ $script:components[$id]=@{Name=$scriptName;State=$state;Start=$start;Stop=$stop;Extra=$extra;Process=$null;Stopping=$false;StopFile=(Join-Path $stopRoot ($id+'.stop'));Log=(Join-Path $dataRoot ('out\ui\'+$id+'.log'))}
  $stop.Enabled=$false
 }
 Add-Component 'record' 'run_core.py' $recordState $recordStart $recordStop @()
@@ -73,8 +74,8 @@ function Stop-Component([string]$id){
 $recordStart.Add_Click({Start-Component 'record'});$recordStop.Add_Click({Stop-Component 'record'})
 $gatewayStart.Add_Click({Start-Component 'gateway'});$gatewayStop.Add_Click({Stop-Component 'gateway'})
 $visualStart.Add_Click({Start-Component 'visual'});$visualStop.Add_Click({Stop-Component 'visual'})
-$openData.Add_Click({$path=Join-Path $root 'out';[void][IO.Directory]::CreateDirectory($path);[Diagnostics.Process]::Start('explorer.exe',$path) | Out-Null})
-$openLogs.Add_Click({$path=Join-Path $root 'out\ui';[void][IO.Directory]::CreateDirectory($path);[Diagnostics.Process]::Start('explorer.exe',$path) | Out-Null})
+$openData.Add_Click({$path=Join-Path $dataRoot 'out';[void][IO.Directory]::CreateDirectory($path);[Diagnostics.Process]::Start('explorer.exe',$path) | Out-Null})
+$openLogs.Add_Click({$path=Join-Path $dataRoot 'out\ui';[void][IO.Directory]::CreateDirectory($path);[Diagnostics.Process]::Start('explorer.exe',$path) | Out-Null})
 $timer=New-Object Windows.Forms.Timer; $timer.Interval=700
 $timer.Add_Tick({
  $running=$false
@@ -102,7 +103,7 @@ if($env:AUDIO_MEMORY_UI_TEST -eq '1'){
  $script:components['gateway'].Extra=@('serve','--port',[string]$port)
  try{
   $gatewayStart.PerformClick();$item=$script:components['gateway'];if(-not $item.Process){throw 'Gateway button did not start a process'}
-  $tokenFile=Join-Path $root 'out\ai-gateway\access-token';$deadline=[DateTime]::UtcNow.AddSeconds(20);$ok=$false
+  $tokenFile=Join-Path $dataRoot 'out\ai-gateway\access-token';$deadline=[DateTime]::UtcNow.AddSeconds(20);$ok=$false
   while([DateTime]::UtcNow -lt $deadline -and -not $item.Process.HasExited){
    [Windows.Forms.Application]::DoEvents()
    try{

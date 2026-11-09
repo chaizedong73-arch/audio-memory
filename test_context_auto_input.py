@@ -21,12 +21,25 @@ class ContextInputTests(unittest.TestCase):
                 self.assertEqual(_model,'glm-5.3-flash')
                 received.extend(json.loads(prompt.rsplit('字幕：',1)[1]))
                 return json.dumps({'sixElements':{k:{'value':'未知','sources':[]} for k in context_auto.ELEMENTS},'narrative':'测试情节','uncertainties':[]},ensure_ascii=False)
-            with patch.object(context_auto,'KEY',key): self.assertEqual(context_auto.generate(root,now,invoke),'ready')
+            with patch.object(context_auto,'key_file',return_value=key): self.assertEqual(context_auto.generate(root,now,invoke),'ready')
             self.assertEqual([row['text'] for row in received],['第0句话','第1句话','第2句话'])
             result=json.loads((root/'out'/'context-auto'/'candidate.json').read_text(encoding='utf-8'))
             self.assertEqual(len(result['sources']),3)
             self.assertEqual(result['candidate']['narrative'],'测试情节')
             self.assertEqual(result['model'],'glm-5.3-flash')
+
+    def test_cloud_transcriber_direct_output_is_available_to_context(self):
+        now = 1793410000.0
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); day = dt.datetime.fromtimestamp(now).strftime('%Y%m%d')
+            timeline = root/'out'/('cloud-asr-'+day)/'timeline.jsonl'; timeline.parent.mkdir(parents=True)
+            timeline.write_text(json.dumps({'file':'cloud.wav','start':0,'end':1,'ts':now-1,'text':'cloud text'})+'\n',encoding='utf-8')
+            key=root/'key';key.write_text('test',encoding='utf-8');received=[]
+            def invoke(prompt, _key, _model):
+                received.extend(json.loads(prompt.rsplit('字幕：',1)[1]))
+                return json.dumps({'sixElements':{k:{'value':'未知','sources':[]} for k in context_auto.ELEMENTS},'narrative':'test'},ensure_ascii=False)
+            with patch.object(context_auto,'key_file',return_value=key): self.assertEqual(context_auto.generate(root,now,invoke),'ready')
+            self.assertEqual([row['text'] for row in received], ['cloud text'])
 
     def test_missing_segment_coordinates_do_not_collapse_distinct_rows(self):
         now=1793410000.0
@@ -39,7 +52,7 @@ class ContextInputTests(unittest.TestCase):
             def invoke(prompt,_key,_model):
                 received.extend(json.loads(prompt.rsplit('字幕：',1)[1]))
                 return json.dumps({'sixElements':{k:{'value':'未知','sources':[]} for k in context_auto.ELEMENTS},'narrative':'测试','uncertainties':[]},ensure_ascii=False)
-            with patch.object(context_auto,'KEY',key):self.assertEqual(context_auto.generate(root,now,invoke),'ready')
+            with patch.object(context_auto,'key_file',return_value=key):self.assertEqual(context_auto.generate(root,now,invoke),'ready')
             self.assertEqual([row['text'] for row in received],['无坐标0','无坐标1'])
 
 
@@ -56,7 +69,7 @@ class ContextInputTests(unittest.TestCase):
             def invoke(prompt,_key,_model):
                 received.extend(json.loads(prompt.rsplit('字幕：',1)[1]))
                 return json.dumps({'sixElements':{k:{'value':'未知','sources':[]} for k in context_auto.ELEMENTS},'narrative':'测试','uncertainties':[]},ensure_ascii=False)
-            with patch.object(context_auto,'KEY',key):self.assertEqual(context_auto.generate(root,now,invoke),'ready')
+            with patch.object(context_auto,'key_file',return_value=key):self.assertEqual(context_auto.generate(root,now,invoke),'ready')
             self.assertEqual([x['text'] for x in received],['第一句','修正第二句'])
             self.assertIn('cloud-asr-fixture',received[1]['id'])
 
@@ -74,7 +87,7 @@ class ContextInputTests(unittest.TestCase):
                 six={k:{'value':'未知','sources':[]} for k in context_auto.ELEMENTS}
                 six['cause']={'value':'测试','sources':['不存在的字幕']}
                 return json.dumps({'sixElements':six,'narrative':'错误情景'},ensure_ascii=False)
-            with patch.object(context_auto,'KEY',key):self.assertEqual(context_auto.generate(root,now,invoke),'error')
+            with patch.object(context_auto,'key_file',return_value=key):self.assertEqual(context_auto.generate(root,now,invoke),'error')
             self.assertEqual(json.loads((dest/'candidate.json').read_text(encoding='utf-8')),original)
             self.assertIn('不存在的字幕来源',json.loads((dest/'state.json').read_text(encoding='utf-8'))['message'])
 
@@ -89,7 +102,7 @@ class ContextInputTests(unittest.TestCase):
             def invoke(prompt,_key,_model):
                 received.extend(json.loads(prompt.rsplit('字幕：',1)[1]))
                 return json.dumps({'sixElements':{k:{'value':'未知','sources':[]} for k in context_auto.ELEMENTS},'narrative':'测试'},ensure_ascii=False)
-            with patch.object(context_auto,'KEY',key):self.assertEqual(context_auto.generate(root,now,invoke),'ready')
+            with patch.object(context_auto,'key_file',return_value=key):self.assertEqual(context_auto.generate(root,now,invoke),'ready')
             self.assertEqual(len(received),45)
             self.assertEqual(received[0]['text'],'段落0')
 
@@ -105,7 +118,7 @@ class ContextInputTests(unittest.TestCase):
             def invoke(prompt,_key,_model):
                 received.extend(json.loads(prompt.rsplit('字幕：',1)[1]))
                 return json.dumps({'sixElements':{k:{'value':'未知','sources':[]} for k in context_auto.ELEMENTS},'narrative':'测试'},ensure_ascii=False)
-            with patch.object(context_auto,'KEY',key):self.assertEqual(context_auto.generate(root,now,invoke),'ready')
+            with patch.object(context_auto,'key_file',return_value=key):self.assertEqual(context_auto.generate(root,now,invoke),'ready')
             self.assertEqual([row['text'] for row in received],['前一天','当天'])
 
 
@@ -128,7 +141,7 @@ class ContextInputTests(unittest.TestCase):
             def invoke(prompt,_key,_model):
                 received.extend(json.loads(prompt.rsplit('字幕：',1)[1]))
                 return json.dumps({'sixElements':{k:{'value':'未知','sources':[]} for k in context_auto.ELEMENTS},'narrative':'测试'},ensure_ascii=False)
-            with patch.object(context_auto,'KEY',key):self.assertEqual(context_auto.generate(root,now,invoke),'ready')
+            with patch.object(context_auto,'key_file',return_value=key):self.assertEqual(context_auto.generate(root,now,invoke),'ready')
             self.assertEqual(received[0]['text'],'这是视图');self.assertEqual(timeline.read_bytes(),original)
 
 if __name__=='__main__':unittest.main()

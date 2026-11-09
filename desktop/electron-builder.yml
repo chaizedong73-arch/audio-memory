@@ -1,15 +1,18 @@
 appId: org.audiomemory.desktop.preview
 productName: Audio Memory Preview
 directories:
-  output: ../../audio-memory-build/electron-preview
+  output: ../build/electron
 files:
   - dist/**/*
   - main.cjs
   - preload.cjs
   - gateway-client.cjs
   - camera-client.cjs
+  - mobile-sync-client.cjs
   - classroom-flow.cjs
   - service-controller.cjs
+  - transcription-mode.cjs
+  - usage-ledger.cjs
   - video-import.cjs
   - package.json
 extraResources:
@@ -18,10 +21,14 @@ extraResources:
     filter:
       - '*.py'
       - '!test_*.py'
+      - '!verify_scene_remote.py'
       - '!visual_vocabulary_test.py'
       - ppt_ocr.ps1
       - hotwords.json
       - scene/phone.html
+      - tools/cloudflared/cloudflared.exe
+      - tools/cloudflared/LICENSE
+      - tools/cloudflared/provenance.json
       - tools/android/platform-tools/adb.exe
       - tools/android/platform-tools/AdbWinApi.dll
       - tools/android/platform-tools/AdbWinUsbApi.dll
@@ -29,9 +36,9 @@ extraResources:
       - tools/android/platform-tools/source.properties
   - from: registry.mjs
     to: backend/registry.mjs
-  - from: ../../audio-memory-build/standalone-20261031/runtime
+  - from: ../build/runtime
     to: backend/runtime
-  - from: ../../audio-memory-build/standalone-20261031/model/base
+  - from: ../build/model/base
     to: backend/models/asr/base
 win:
   target: nsis

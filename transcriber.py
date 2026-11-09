@@ -24,6 +24,8 @@
     - 可用内存低于 --min-mb 时进入等待，不抢占内存
     - 时间轴由文件名时间推算，不依赖写盘时间
 """
+from data_location import data_root as default_data_root
+from material_exchange import MaterialExchange
 import os, sys, json, time, glob, argparse, datetime, ctypes, tempfile
 
 import numpy as np
@@ -123,7 +125,8 @@ def day_zero(name):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dir", default=os.path.join(HERE, "record"))
+    ap.add_argument("--root", default=None)
+    ap.add_argument("--dir", default=None)
     ap.add_argument("--out", default=None, help="输出根目录（内部按天建 YYYYMMDD 子目录）")
     ap.add_argument("--model", default="base")
     ap.add_argument("--threads", type=int, default=6)
@@ -135,149 +138,152 @@ def main():
                     help="允许回补最近几天的录音（防止漏转后永远补不上）")
     args = ap.parse_args()
 
-    outroot = args.out or os.path.join(os.path.dirname(os.path.abspath(args.dir)), "out")
-    data_root = os.path.dirname(os.path.abspath(outroot))
+    base = args.root or str(default_data_root())
+    defaults = MaterialExchange(base)
+    args.dir = args.dir or str(defaults.recording_directory())
+    outroot = args.out or (str(defaults.transcript_directory()) if args.root or not args.dir else os.path.join(os.path.dirname(os.path.abspath(args.dir)), "out"))
+    data_root = os.path.abspath(args.root) if args.root else os.path.dirname(os.path.abspath(outroot))
+    exchange = MaterialExchange(data_root, recordings=args.dir, transcripts=outroot)
     import singlelock
     _lk = singlelock.acquire(os.path.join(data_root, ".locks", "transcriber.lock"))
     if _lk is None:
         print("[tr] 已有 transcriber 在运行，退出。", flush=True)
         return
 
-    os.makedirs(outroot, exist_ok=True)
-    state_path = os.path.join(outroot, "_transcribed.json")
-    fail_path = os.path.join(outroot, "_fail.json")
+    try:
+        os.makedirs(outroot, exist_ok=True)
+        state_path = os.path.join(outroot, "_transcribed.json")
+        fail_path = os.path.join(outroot, "_fail.json")
 
-    state = {}
-    if os.path.exists(state_path):
-        with open(state_path, encoding="utf-8") as state_file:
-            state = json.load(state_file)
-    fails = {}
-    if os.path.exists(fail_path):
-        with open(fail_path, encoding="utf-8") as fail_file:
-            fails = json.load(fail_file)
+        state = {}
+        if os.path.exists(state_path):
+            with open(state_path, encoding="utf-8") as state_file:
+                state = json.load(state_file)
+        fails = {}
+        if os.path.exists(fail_path):
+            with open(fail_path, encoding="utf-8") as fail_file:
+                fails = json.load(fail_file)
 
-    model = None
-    print(f"[tran] 监听 {args.dir} → {outroot}  模型 {args.model}  {args.threads} 线程  "
-          f"内存下限 {args.min_mb:.0f}MB", flush=True)
+        model = None
+        print(f"[tran] 监听 {args.dir} → {outroot}  模型 {args.model}  {args.threads} 线程  "
+              f"内存下限 {args.min_mb:.0f}MB", flush=True)
 
-    def save_state():
-        for path, value in ((state_path, state), (fail_path, fails)):
-            fd, temporary = tempfile.mkstemp(prefix='.asr-state-', suffix='.tmp', dir=outroot)
-            try:
-                with os.fdopen(fd, 'w', encoding='utf-8') as output:
-                    json.dump(value, output, ensure_ascii=False)
-                    output.flush()
-                    os.fsync(output.fileno())
-                os.replace(temporary, path)
-            finally:
-                if os.path.exists(temporary): os.unlink(temporary)
+        def save_state():
+            for path, value in ((state_path, state), (fail_path, fails)):
+                fd, temporary = tempfile.mkstemp(prefix='.asr-state-', suffix='.tmp', dir=outroot)
+                try:
+                    with os.fdopen(fd, 'w', encoding='utf-8') as output:
+                        json.dump(value, output, ensure_ascii=False)
+                        output.flush()
+                        os.fsync(output.fileno())
+                    os.replace(temporary, path)
+                finally:
+                    if os.path.exists(temporary): os.unlink(temporary)
 
-    def wait_or_stop(seconds):
-        deadline=time.monotonic()+seconds
-        while time.monotonic()<deadline:
-            if args.stop_file and os.path.exists(args.stop_file):return True
-            time.sleep(min(.2 if args.stop_file else seconds,max(0,deadline-time.monotonic())))
-        return bool(args.stop_file and os.path.exists(args.stop_file))
+        def wait_or_stop(seconds):
+            deadline=time.monotonic()+seconds
+            while time.monotonic()<deadline:
+                if args.stop_file and os.path.exists(args.stop_file):return True
+                time.sleep(min(.2 if args.stop_file else seconds,max(0,deadline-time.monotonic())))
+            return bool(args.stop_file and os.path.exists(args.stop_file))
 
-    while True:
-        if args.stop_file and os.path.exists(args.stop_file):return
-        files = sorted(glob.glob(os.path.join(args.dir, "*.wav")) +
-                       glob.glob(os.path.join(args.dir, "*.flac")))
-        # 回补窗口之外的历史文件不处理（避免一次转几天）
-        cutoff = None
-        if args.backfill_days > 0:
-            cutoff = (datetime.datetime.now() - datetime.timedelta(days=args.backfill_days)).strftime("%Y%m%d")
-        todo = []
-        for f in files:
-            stem = stem_of(f)
-            if stem in state:
+        while True:
+            if args.stop_file and os.path.exists(args.stop_file):return
+            files = exchange.recordings()
+            # 回补窗口之外的历史文件不处理（避免一次转几天）
+            cutoff = None
+            if args.backfill_days > 0:
+                cutoff = (datetime.datetime.now() - datetime.timedelta(days=args.backfill_days)).strftime("%Y%m%d")
+            todo = []
+            for f in files:
+                stem = stem_of(f)
+                if stem in state:
+                    continue
+                if cutoff and day_of(stem) < cutoff:
+                    continue
+                todo.append(f)
+
+            if not todo:
+                if args.once:
+                    print("[tran] 没有待转文件", flush=True)
+                    return
+                if wait_or_stop(args.poll):return
                 continue
-            if cutoff and day_of(stem) < cutoff:
-                continue
-            todo.append(f)
 
-        if not todo:
+            for f in todo:
+                if args.stop_file and os.path.exists(args.stop_file):return
+                name = os.path.basename(f)
+                stem = stem_of(f)
+                free = avail_mb()
+                if free < args.min_mb:
+                    print(f"[tran] 可用内存 {free:.0f}MB < {args.min_mb:.0f}MB，暂停等待…", flush=True)
+                    if args.once:
+                        return
+                    if wait_or_stop(60):return
+                    break
+
+                if model is None:
+                    t = time.time()
+                    local_model=os.path.join(HERE,'models','asr',args.model)
+                    selected_model=local_model if os.path.isfile(os.path.join(local_model,'model.bin')) else args.model
+                    model = WhisperModel(selected_model, device="cpu", compute_type="int8",
+                                         cpu_threads=args.threads,download_root=os.path.join(data_root,'models','asr-cache'))
+                    print(f"[tran] 模型加载 {time.time()-t:.1f}s", flush=True)
+
+                try:
+                    audio = read_wav(f)
+                    d0 = day_zero(stem)
+                    offset = (parse_time(stem) - d0).total_seconds()
+                    t = time.time()
+                    segments, _ = model.transcribe(
+                        audio, language="zh", beam_size=1, vad_filter=True,
+                        vad_parameters=dict(min_silence_duration_ms=500, speech_pad_ms=200),
+                        condition_on_previous_text=False, initial_prompt=PROMPT or None,
+                    )
+                    rows = []
+                    for s in segments:
+                        txt = postproc(s.text.strip())
+                        if not txt:
+                            continue
+                        abs_s = offset + s.start
+                        rows.append({
+                            "start": round(abs_s, 2),
+                            "end": round(offset + s.end, 2),
+                            "ts": (d0 + datetime.timedelta(seconds=abs_s)).timestamp(),
+                            "t": (d0 + datetime.timedelta(seconds=abs_s)).strftime("%H:%M:%S"),
+                            "date": d0.strftime("%Y-%m-%d"),
+                            "file": stem,
+                            "text": txt,
+                        })
+                    daydir = str(exchange.append_transcripts(day_of(stem), rows))
+                    state[stem] = len(rows)
+                    fails.pop(stem, None)
+                    save_state()
+                    try:
+                        from classroom_materials import publish
+                        publish(daydir, vault=os.path.join(outroot, 'live-materials'), root=data_root)
+                    except Exception as export_error:
+                        # A note-export failure must not retry or duplicate transcription.
+                        print(f"[classroom] export failed: {type(export_error).__name__}", flush=True)
+                    el = time.time() - t
+                    print(f"[tran] {name}  {len(audio)/SR:.0f}s → {el:.1f}s  {len(rows)} 段 "
+                          f"(RTF {el/(len(audio)/SR):.2f})", flush=True)
+                except Exception as e:
+                    print(f"[tran] {name} 失败: {e!r}", flush=True)
+                    fails[stem] = fails.get(stem, 0) + 1
+                    save_state()
+                    if fails[stem] >= MAX_FAIL:
+                        print(f"[tran] {name} 连续失败 {fails[stem]} 次，放弃（内容留在 record/ 可手工重试）",
+                              flush=True)
+                        state[stem] = -1
+                        save_state()
+
             if args.once:
-                print("[tran] 没有待转文件", flush=True)
                 return
             if wait_or_stop(args.poll):return
-            continue
 
-        for f in todo:
-            if args.stop_file and os.path.exists(args.stop_file):return
-            name = os.path.basename(f)
-            stem = stem_of(f)
-            free = avail_mb()
-            if free < args.min_mb:
-                print(f"[tran] 可用内存 {free:.0f}MB < {args.min_mb:.0f}MB，暂停等待…", flush=True)
-                if args.once:
-                    return
-                if wait_or_stop(60):return
-                break
-
-            if model is None:
-                t = time.time()
-                local_model=os.path.join(HERE,'models','asr',args.model)
-                selected_model=local_model if os.path.isfile(os.path.join(local_model,'model.bin')) else args.model
-                model = WhisperModel(selected_model, device="cpu", compute_type="int8",
-                                     cpu_threads=args.threads,download_root=os.path.join(HERE,'models','asr-cache'))
-                print(f"[tran] 模型加载 {time.time()-t:.1f}s", flush=True)
-
-            try:
-                audio = read_wav(f)
-                d0 = day_zero(stem)
-                offset = (parse_time(stem) - d0).total_seconds()
-                t = time.time()
-                segments, _ = model.transcribe(
-                    audio, language="zh", beam_size=1, vad_filter=True,
-                    vad_parameters=dict(min_silence_duration_ms=500, speech_pad_ms=200),
-                    condition_on_previous_text=False, initial_prompt=PROMPT or None,
-                )
-                rows = []
-                for s in segments:
-                    txt = postproc(s.text.strip())
-                    if not txt:
-                        continue
-                    abs_s = offset + s.start
-                    rows.append({
-                        "start": round(abs_s, 2),
-                        "end": round(offset + s.end, 2),
-                        "ts": (d0 + datetime.timedelta(seconds=abs_s)).timestamp(),
-                        "t": (d0 + datetime.timedelta(seconds=abs_s)).strftime("%H:%M:%S"),
-                        "date": d0.strftime("%Y-%m-%d"),
-                        "file": stem,
-                        "text": txt,
-                    })
-                daydir = os.path.join(outroot, day_of(stem))
-                os.makedirs(daydir, exist_ok=True)
-                with open(os.path.join(daydir, "timeline.jsonl"), "a", encoding="utf-8") as fo:
-                    for r in rows:
-                        fo.write(json.dumps(r, ensure_ascii=False) + "\n")
-                state[stem] = len(rows)
-                fails.pop(stem, None)
-                save_state()
-                try:
-                    from classroom_materials import publish
-                    publish(daydir, vault=os.path.join(outroot, 'live-materials'), root=data_root)
-                except Exception as export_error:
-                    # A note-export failure must not retry or duplicate transcription.
-                    print(f"[classroom] export failed: {type(export_error).__name__}", flush=True)
-                el = time.time() - t
-                print(f"[tran] {name}  {len(audio)/SR:.0f}s → {el:.1f}s  {len(rows)} 段 "
-                      f"(RTF {el/(len(audio)/SR):.2f})", flush=True)
-            except Exception as e:
-                print(f"[tran] {name} 失败: {e!r}", flush=True)
-                fails[stem] = fails.get(stem, 0) + 1
-                save_state()
-                if fails[stem] >= MAX_FAIL:
-                    print(f"[tran] {name} 连续失败 {fails[stem]} 次，放弃（内容留在 record/ 可手工重试）",
-                          flush=True)
-                    state[stem] = -1
-                    save_state()
-
-        if args.once:
-            return
-        if wait_or_stop(args.poll):return
+    finally:
+        _lk.close()
 
 
 if __name__ == "__main__":

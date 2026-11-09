@@ -10,6 +10,7 @@
 用法:
     python winctx.py --out winlog
 """
+from data_location import data_root as default_data_root
 import os, sys, json, time, ctypes, argparse, datetime
 from ctypes import wintypes
 
@@ -48,7 +49,7 @@ def get_foreground_info():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "winlog"))
+    ap.add_argument("--out", default=os.path.join(str(default_data_root()), "winlog"))
     ap.add_argument("--interval", type=float, default=1.0)
     args = ap.parse_args()
 

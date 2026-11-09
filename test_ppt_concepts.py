@@ -10,6 +10,12 @@ class ConceptTests(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name);set_enabled(self.root,True);self.notes=self.root/'notes';self.notes.mkdir();self.doc=self.notes/'课件.md';self.doc.write_text('PPT出现ht-1。',encoding='utf-8');self.source=self.root/'out'/time.strftime('%Y%m%d')/'timeline.jsonl';self.source.parent.mkdir(parents=True);self.row={'file':'one','text':'这里是hz.1，不是hz.10','start':0,'end':2,'ts':time.time()};self.source.write_text(json.dumps(self.row)+'\n',encoding='utf-8');self.group=collect(self.root,0,{})[0];self.config={'notesRoot':str(self.notes),'lesson':'课件'}
  def tearDown(self):self.tmp.cleanup()
+ def test_fresh_ocr_cache_keeps_classroom_gate_at_data_root(self):
+  image=self.root/'fixture.png';image.write_bytes(b'image')
+  folder=self.root/'out'/'visual-vocabulary'/'ocr-attempts'/'one'
+  result=index_images([{'path':str(image)}],self.root,ocr=lambda paths:[{'path':str(paths[0]),'text':'fixture','words':[]}],folder=folder)
+  self.assertEqual(result[0]['text'],'fixture');self.assertTrue((folder/'catalog.json').is_file())
+  self.assertFalse((folder/'classroom-mode.json').exists())
  def ask(self,body):
   self.assertFalse(any(c.get('type')=='image_url' for c in body['messages'][0]['content']))
   key=record_key(self.source,self.row)

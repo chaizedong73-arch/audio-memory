@@ -11,6 +11,8 @@
     python recorder.py --out record --device "麦克风 (Realtek(R) Audio)"
     python recorder.py --list
 """
+from data_location import data_root as default_data_root
+from material_exchange import MaterialExchange
 import os, sys, time, wave, argparse, datetime, threading, json
 import numpy as np
 import sounddevice as sd
@@ -72,7 +74,8 @@ def pick_device():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "record"))
+    ap.add_argument("--root", default=str(default_data_root()))
+    ap.add_argument("--out", default=None)
     ap.add_argument("--device", default="auto", help="编号 / 名字片段 / auto")
     ap.add_argument("--seconds", type=float, default=60.0, help="每段多少秒")
     ap.add_argument("--sr", type=int, default=None, help="采样率，默认跟设备走")
@@ -81,6 +84,7 @@ def main():
     ap.add_argument('--stop-file', default=None, help='停止信号文件，供前台启动器使用')
     ap.add_argument('--ready-file', default=None, help='收到音频后创建的就绪信号')
     args = ap.parse_args()
+    args.out = args.out or str(MaterialExchange(args.root).recording_directory())
 
     if args.list:
         print(sd.query_devices())

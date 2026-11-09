@@ -1,7 +1,6 @@
 """Download the explicit experiment shortlist; never run image inference."""
 import concurrent.futures,hashlib,json,os,time,urllib.request,zipfile
 from pathlib import Path
-import requests,yaml,rapidocr
 
 ROOT=Path(__file__).resolve().parent
 STORE=ROOT/'visual-models'
@@ -14,6 +13,7 @@ def sha(path):
  return h.hexdigest()
 
 def fetch(row):
+ import requests
  p=STORE/row['path'];p.parent.mkdir(parents=True,exist_ok=True)
  if p.exists() and (not row.get('sha256') or sha(p)==row['sha256']):return {'path':row['path'],'bytes':p.stat().st_size,'sha256':sha(p)}
  tmp=p.with_suffix(p.suffix+'.part')
@@ -37,11 +37,15 @@ def fetch(row):
 def get(url):
  with urllib.request.urlopen(url,timeout=25) as response:return json.load(response)
 
+def load_defaults():
+ import yaml, rapidocr
+ return yaml.safe_load((Path(rapidocr.__file__).parent/'default_models.yaml').read_text(encoding='utf-8'))['onnxruntime']
+
 def prepare():
  STORE.mkdir(exist_ok=True)
  previous=json.loads(MANIFEST.read_text(encoding='utf-8')) if MANIFEST.exists() else {}
  retired=set(previous.get('retiredIds',[]))
- defaults=yaml.safe_load((Path(rapidocr.__file__).parent/'default_models.yaml').read_text(encoding='utf-8'))['onnxruntime']
+ defaults=load_defaults()
  catalog=[{'id':'local:windows','label':'Windows OCR · 系统基线','task':'ocr','kind':'windows','ready':True}];files={}
  variants=[('PP-OCRv4','mobile','ch'),('PP-OCRv4','server','ch'),('PP-OCRv4','server','ch_doc'),('PP-OCRv5','mobile','ch'),('PP-OCRv5','server','ch'),('PP-OCRv6','tiny','multi'),('PP-OCRv6','small','multi'),('PP-OCRv6','medium','multi')]
  for version,size,lang in variants:

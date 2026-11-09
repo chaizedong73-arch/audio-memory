@@ -1,4 +1,6 @@
 """Recognize supplied local images independently and publish OCR result files."""
+from data_location import data_root as default_data_root
+from ocr_store import OcrStore
 import argparse
 import hashlib
 import json
@@ -55,10 +57,9 @@ def run(images, root=ROOT, recognize=_recognize, stop_file=None):
     paths = [Path(p).resolve(strict=True) for p in images]
     if any(not p.is_file() or not p.is_relative_to(root) for p in paths):
         raise ValueError('Images must be files inside the project root')
-    folder = root / 'out' / 'ppt-concepts'; folder.mkdir(parents=True, exist_ok=True)
-    catalog_path = folder / 'catalog.json'
-    catalog = json.loads(catalog_path.read_text(encoding='utf-8-sig')) if catalog_path.exists() else {'pages': {}}
-    if not isinstance(catalog.get('pages'), dict): raise ValueError('Invalid OCR catalog; preserved without changes')
+    store = OcrStore(root); folder = store.folder
+    store.catalog()  # Validate before spending time on recognition.
+    pages, stored_results = {}, {}
     output = recognize(paths, folder, stop_file=stop_file) if stop_file else recognize(paths, folder)
     if not isinstance(output, list): raise ValueError('OCR engine returned invalid output')
     by_path = {str(item.get('path')): item for item in output if isinstance(item, dict)}
@@ -74,17 +75,17 @@ def run(images, root=ROOT, recognize=_recognize, stop_file=None):
         if not text.strip(): result['empty'] += 1
         terms = list(dict.fromkeys(re.findall(r'[A-Za-z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*|[α-ωΑ-Ω]|[\u4e00-\u9fff]{2,8}', text)))[:250]
         stamp = [path.stat().st_size, path.stat().st_mtime_ns]
-        _save(folder / (key + '.json'), {**item, 'hash': key, 'terms': terms, 'indexedAt': time.time()})
-        catalog['pages'][str(path)] = {'hash': key, 'stamp': stamp}
+        stored_results[key] = {**item, 'hash': key, 'terms': terms, 'indexedAt': time.time()}
+        pages[str(path)] = {'hash': key, 'stamp': stamp}
         result['completed'] += 1
-    _save(catalog_path, catalog)
+    store.commit(pages, stored_results)
     return result
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('images', nargs='+', type=Path)
-    parser.add_argument('--root', type=Path, default=ROOT)
+    parser.add_argument('--root', type=Path, default=default_data_root())
     parser.add_argument('--stop-file', type=Path)
     args = parser.parse_args()
     try:

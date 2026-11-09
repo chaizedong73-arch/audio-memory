@@ -1,4 +1,6 @@
 """Build evidence-based video-frame/subtitle time candidates without guessing PPT matches."""
+from data_location import data_root as default_data_root
+from material_exchange import MaterialExchange
 import argparse
 import json
 import math
@@ -13,12 +15,9 @@ ROOT = Path(__file__).resolve().parent
 def align(root, video_index, video_start=None, stop_file=None):
     if stop_file and Path(stop_file).exists(): raise InterruptedError('alignment stopped')
     root = Path(root).resolve()
-    video_index = Path(video_index).resolve(strict=True)
-    if not video_index.is_file() or not video_index.is_relative_to(root):
-        raise ValueError('Video index must be inside the project')
+    video_index, data = MaterialExchange(root).video_index(video_index)
     if video_start is not None and (not isinstance(video_start, (int, float)) or not math.isfinite(video_start) or video_start <= 0):
         raise ValueError('Video start must be an absolute timestamp')
-    data = json.loads(video_index.read_text(encoding='utf-8-sig'))
     duration = float(data['processedSeconds'])
     if not math.isfinite(duration) or duration <= 0: raise ValueError('Invalid video duration')
     occurrences = []
@@ -36,34 +35,24 @@ def align(root, video_index, video_start=None, stop_file=None):
         result['warnings'].append('video_start_unknown')
         return result
     end_at = video_start + duration
-    for timeline in sorted((root / 'out').glob('**/timeline.jsonl')):
-        if stop_file and Path(stop_file).exists(): raise InterruptedError('alignment stopped')
-        source = timeline.relative_to(root).as_posix()
-        if not timeline.resolve().is_relative_to(root):
-            result['warnings'].append('transcript_source_outside_project'); continue
+    for source, line_no, row, error in MaterialExchange(root).transcript_rows(stop_file):
+        if error:
+            result['warnings'].append(error)
+            continue
         try:
-            with timeline.open('rb') as stream:
-                for line_no, raw in enumerate(stream, 1):
-                    if stop_file and Path(stop_file).exists(): raise InterruptedError('alignment stopped')
-                    try:
-                        row = json.loads(raw.decode('utf-8'))
-                        ts = row.get('ts'); text = row.get('text')
-                        if not isinstance(ts, (int, float)) or not math.isfinite(ts) or not isinstance(text, str): continue
-                        if not video_start <= ts < end_at: continue
-                        duration_s = max(0.0, float(row.get('end', 0)) - float(row.get('start', 0)))
-                        if not math.isfinite(duration_s): raise ValueError('invalid duration')
-                        begin = ts - video_start
-                        finish = min(duration, begin + duration_s)
-                        refs = [x['pageId'] for x in occurrences if x['startSeconds'] <= begin < x['endSeconds'] or
-                                (finish > begin and x['startSeconds'] < finish and x['endSeconds'] > begin)]
-                        result['segments'].append({'source': source, 'line': line_no, 'ts': ts,
-                                                   'offsetSeconds': round(begin, 3), 'pageCandidates': list(dict.fromkeys(refs))})
-                    except (ValueError, TypeError, AttributeError, UnicodeDecodeError):
-                        result['warnings'].append('invalid_transcript_record'); continue
-        except InterruptedError:
-            raise
-        except OSError:
-            result['warnings'].append('transcript_unreadable')
+            ts = row.get('ts'); text = row.get('text')
+            if not isinstance(ts, (int, float)) or not math.isfinite(ts) or not isinstance(text, str): continue
+            if not video_start <= ts < end_at: continue
+            duration_s = max(0.0, float(row.get('end', 0)) - float(row.get('start', 0)))
+            if not math.isfinite(duration_s): raise ValueError('invalid duration')
+            begin = ts - video_start
+            finish = min(duration, begin + duration_s)
+            refs = [x['pageId'] for x in occurrences if x['startSeconds'] <= begin < x['endSeconds'] or
+                    (finish > begin and x['startSeconds'] < finish and x['endSeconds'] > begin)]
+            result['segments'].append({'source': source, 'line': line_no, 'ts': ts,
+                                       'offsetSeconds': round(begin, 3), 'pageCandidates': list(dict.fromkeys(refs))})
+        except (ValueError, TypeError, AttributeError):
+            result['warnings'].append('invalid_transcript_record')
     if not result['segments']: result['warnings'].append('no_timed_subtitles')
     result['warnings'] = sorted(set(result['warnings']))
     return result
@@ -82,7 +71,7 @@ def save(root, result):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('video_index', type=Path); parser.add_argument('--root', type=Path, default=ROOT)
+    parser.add_argument('video_index', type=Path); parser.add_argument('--root', type=Path, default=default_data_root())
     parser.add_argument('--video-start', type=float, default=None)
     parser.add_argument('--stop-file', type=Path)
     args = parser.parse_args()

@@ -1,5 +1,7 @@
 """Export the verified local material index to MiniOB-compatible SQL (no media blobs)."""
-import argparse, sqlite3
+from data_location import data_root as default_data_root
+import argparse
+from material_store import latest_classroom_snapshot
 from pathlib import Path
 
 HERE=Path(__file__).resolve().parent
@@ -23,18 +25,16 @@ WHERE s.session_id=p.session_id AND s.slide_id=p.slide_id
   AND s.align_state='passed' AND p.match_state='passed' AND n.state='confirmed';
 '''
 def export(root=HERE, course_id='UNBOUND_COURSE'):
- root=Path(root); db=root/'out/material-index/materials.sqlite3'; out=root/'out/miniob-material-db';out.mkdir(parents=True,exist_ok=True)
- con=sqlite3.connect(db); session=con.execute('select id,video_hash,start_at,end_at from sessions order by rowid desc limit 1').fetchone()
- if not session:raise ValueError('SQLite 材料库没有硬桥接会话')
- sid,vhash,start,end=session; lines=[SCHEMA, "INSERT INTO courses VALUES ('%s','','','unbound');"%esc(course_id), "INSERT INTO sessions VALUES ('%s','%s','%s',%s,%s,'blocked_unbound_course');"%(esc(sid),esc(course_id),esc(vhash),start,end)]
- slides=con.execute('select slide_id,asset_hash,first_seen from slides where session_id=? order by first_seen',(sid,)).fetchall()
+ root=Path(root); out=root/'out/miniob-material-db';out.mkdir(parents=True,exist_ok=True)
+ snapshot=latest_classroom_snapshot(root); sid,vhash,start,end=snapshot['session']; lines=[SCHEMA, "INSERT INTO courses VALUES ('%s','','','unbound');"%esc(course_id), "INSERT INTO sessions VALUES ('%s','%s','%s',%s,%s,'blocked_unbound_course');"%(esc(sid),esc(course_id),esc(vhash),start,end)]
+ slides=snapshot['slides']
  for no,(slide,h,seen) in enumerate(slides,1):lines.append("INSERT INTO slides VALUES ('%s','%s','',%d,'%s',%s,'passed');"%(esc(sid),esc(slide),no,esc(h),seen or 0))
- for line_no,text,ts,slide,_ in con.execute('select line_no,text,ts,ppt_id,ppt_offset from segments where session_id=? order by line_no',(sid,)):
+ for line_no,text,ts,slide,_ in snapshot['segments']:
   lines.append("INSERT INTO segments VALUES ('%s',%d,%s,'%s','%s','passed');"%(esc(sid),line_no,ts or 0,esc(slide),esc(text)))
- for slide,path,method,state in con.execute('select slide_id,note_path,method,state from ppt_note_candidates where session_id=?',(sid,)):
+ for slide,path,method,state in snapshot['targets']:
   lines.append("INSERT INTO note_targets VALUES ('%s','%s','%s','%s','%s');"%(esc(sid),esc(slide),esc(path),esc(method),esc(state)))
- con.close();(out/'schema-and-seed.sql').write_text('\n'.join(lines)+'\n',encoding='utf-8');(out/'notes-gate.sql').write_text(QUERY,encoding='utf-8')
+ (out/'schema-and-seed.sql').write_text('\n'.join(lines)+'\n',encoding='utf-8');(out/'notes-gate.sql').write_text(QUERY,encoding='utf-8')
  (out/'README.md').write_text('# MiniOB 课堂材料库导入包\n\n当前导出为 `UNBOUND_COURSE`，因为原始 PPT 与 Obsidian 笔记尚未完成课程注册；`notes-gate.sql` 因而必定返回空集。这是硬门槛，不是故障。将 SQL 导入实际 MiniOB 后，先登记课程、原始PPT哈希与已确认笔记目标，才允许查询交给笔记AI。\n',encoding='utf-8')
  return out,len(slides)
 if __name__=='__main__':
- p=argparse.ArgumentParser();p.add_argument('--root',type=Path,default=HERE);p.add_argument('--course-id',default='UNBOUND_COURSE');a=p.parse_args();out,count=export(a.root,a.course_id);print(f'{out} slides={count}')
+ p=argparse.ArgumentParser();p.add_argument('--root',type=Path,default=default_data_root());p.add_argument('--course-id',default='UNBOUND_COURSE');a=p.parse_args();out,count=export(a.root,a.course_id);print(f'{out} slides={count}')

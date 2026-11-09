@@ -1,6 +1,6 @@
-﻿$ErrorActionPreference='Stop'
+﻿param([string]$HostRoot=(Join-Path $env:USERPROFILE '.tools\ai-agent-monitor'),[switch]$RequireMaterial,[switch]$CheckRemoval)
+$ErrorActionPreference='Stop'
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Xaml
-$hostRoot=Join-Path $env:USERPROFILE '.tools\ai-agent-monitor'
 [void][Reflection.Assembly]::LoadFrom((Join-Path $hostRoot 'AiWorkbench.Contracts.dll'))
 $assembly=[Reflection.Assembly]::LoadFrom((Join-Path $hostRoot 'AiTools-audio-native.exe'))
 $type=$assembly.GetType('AiAgentMonitor.ToolManager',$true)
@@ -27,6 +27,16 @@ try{
   $current=$pane.GetType().GetField('current',$flags).GetValue($pane)
  }while($null -eq $current -and (Get-Date) -lt $until)
  if($null -eq $current){throw 'Real host did not receive runtime snapshot'}
+ if($RequireMaterial -and (-not $current.Transcript.Contains('host-fixture') -or [string]::IsNullOrEmpty($current.MaterialPath))){throw 'Host did not read isolated material'}
+ if($CheckRemoval){
+  [AiAudioMemory.AudioControls]::Classroom($current.Root,$true)
+  $marker=Join-Path $current.Root 'host-removal-fixture.txt';[IO.File]::WriteAllText($marker,'preserve')
+  $catalog=$type.GetField('catalog',$flags).GetValue($manager);$catalog.Subscribe('audio-memory',$false)
+  [void]$type.GetMethod('LoadModules',$flags).Invoke($manager,@())
+  if($views.ContainsKey('audio-memory')){throw 'Removed module view remained open'}
+  if([IO.File]::ReadAllText($marker) -ne 'preserve' -or -not [AiAudioMemory.AudioControls]::Classroom($current.Root)){throw 'Removal changed data or classroom mode'}
+  $catalog.Subscribe('audio-memory',$true)
+ }
  [pscustomobject]@{result='PASS';hostEntry='录音记忆';native=$true;recording=$current.Recording;model=$current.Model;materialReadable=($current.MaterialPath.Length -gt 0);transcriptCharacters=$current.Transcript.Length}|ConvertTo-Json -Compress
 }finally{
  if($pane){$pane.Close()}

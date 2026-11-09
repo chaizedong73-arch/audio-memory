@@ -20,6 +20,8 @@ namespace AiAudioMemory {
  public sealed class AudioSnapshot {
   public string Root,Recording,RecordingDetail,Model,Mode,Latency,Cost,Deadline,Health,Transcript,TranscriptMeta,Memory,Log,Diagnostic,MaterialPath;
   public bool RecordingHealthy;
+  public Dictionary<string,object> SubtitleState,SubtitleSettings,NotesState,Confirmations,ContextState,ContextCandidate;
+  public NotesSettings NotesConfig;
   public List<TextRange> Ranges=new List<TextRange>();
   public List<CorrectionNote> Annotations=new List<CorrectionNote>();
  }
@@ -46,7 +48,11 @@ namespace AiAudioMemory {
    Click("AcceptSubtitle",()=>SubmitSubtitleDecision("accept"));Click("RejectSubtitle",()=>SubmitSubtitleDecision("reject"));
    subtitleDecisionWorker.DoWork+=(sender,args)=>{
     var files=(string[])args.Argument;string registry=Path.Combine(AudioControls.ToolboxRoot(packageRoot),"registry.mjs");
-    using(var proc=Process.Start(new ProcessStartInfo("node.exe","\""+registry+"\" run --owner chatgpt --name Subtitle-User-Decision --desc \"用户确认字幕候选，完成自动退出\" -- \""+AudioControls.Python(files[0])+"\" \""+Path.Combine(files[0],"subtitle_decisions.py")+"\" --request \""+files[1]+"\""){UseShellExecute=false,CreateNoWindow=true,RedirectStandardError=true})){
+    bool service=AudioControls.UsesService(files[0]);string input=service?" --stdin":" --request \""+files[1]+"\"";
+    var info=new ProcessStartInfo("node.exe","\""+registry+"\" run --owner chatgpt --name Subtitle-User-Decision --desc \"用户确认字幕候选，完成自动退出\" -- \""+AudioControls.Python(files[0])+"\" \""+Path.Combine(AudioControls.CodeRoot(files[0]),"subtitle_decisions.py")+"\""+input+AudioControls.RootArgument(files[0])){UseShellExecute=false,CreateNoWindow=true,RedirectStandardError=true,RedirectStandardInput=service};
+    info.EnvironmentVariables["PYTHONUTF8"]="1";
+    using(var proc=Process.Start(info)){
+     if(service)using(var writer=new StreamWriter(proc.StandardInput.BaseStream,new UTF8Encoding(false))){writer.Write(files[1]);}
      if(!proc.WaitForExit(15000))throw new InvalidOperationException("确认尚未完成，请稍后查看；未自动重发");
      if(proc.ExitCode!=0)throw new InvalidOperationException("确认未应用："+proc.StandardError.ReadToEnd());
     }
@@ -93,11 +99,13 @@ namespace AiAudioMemory {
   void SubmitSubtitleDecision(string action){
    if(current==null||String.IsNullOrEmpty(subtitleConfirmationId)||subtitleDecisionWorker.IsBusy)return;
    string term=((TextBox)View.FindName("SubtitleTerm")).Text.Trim();if(action=="accept"&&(term.Length==0||term.Length>100))throw new ArgumentException("请填写最多100字的符号或术语");
-   string folder=Path.Combine(current.Root,"out","subtitle-decisions");Directory.CreateDirectory(folder);string request=Path.Combine(folder,Guid.NewGuid().ToString("N")+".json");
-   AudioControls.Save(request,new Dictionary<string,object>{{"id",subtitleConfirmationId},{"action",action},{"term",term}});subtitleDecisionWorker.RunWorkerAsync(new[]{current.Root,request});Set("Feedback","正在处理确认，原文版本变化时不会强行覆盖。");
+   var value=new Dictionary<string,object>{{"id",subtitleConfirmationId},{"action",action},{"term",term}};string request;
+   if(AudioControls.UsesService(current.Root))request=new JavaScriptSerializer().Serialize(value);
+   else{string folder=Path.Combine(current.Root,"out","subtitle-decisions");Directory.CreateDirectory(folder);request=Path.Combine(folder,Guid.NewGuid().ToString("N")+".json");AudioControls.Save(request,value);}
+   subtitleDecisionWorker.RunWorkerAsync(new[]{current.Root,request});Set("Feedback","正在处理确认，原文版本变化时不会强行覆盖。");
   }
-  void UpdateSubtitleConfirmation(string root){
-   var all=Json(Path.Combine(root,"subtitle-confirmations.json"));object items;Dictionary<string,object> pending=null;
+  void UpdateSubtitleConfirmation(string root,Dictionary<string,object> shared){
+   var all=shared??Json(Path.Combine(root,"subtitle-confirmations.json"));object items;Dictionary<string,object> pending=null;
    if(all.TryGetValue("items",out items)&&items is Dictionary<string,object>)foreach(object value in ((Dictionary<string,object>)items).Values){var row=value as Dictionary<string,object>;if(row!=null&&S(row,"status")=="needs_confirmation"){pending=row;break;}}
    ((TabItem)((TabControl)View.FindName("ContentTabs")).Items[3]).Header=N(all,"pendingCount")>0?"字幕维护 · "+N(all,"pendingCount").ToString("0")+" 待确认":"字幕维护";
    var panel=(Border)View.FindName("SubtitleConfirmation");panel.Visibility=pending==null?Visibility.Collapsed:Visibility.Visible;
@@ -107,30 +115,30 @@ namespace AiAudioMemory {
   }
   void SubtitleMaintenance(bool start){
    if(current==null)throw new InvalidOperationException("录音项目未连接");
-   string file=Path.Combine(current.Root,"subtitle-maintenance.json");var settings=Json(file);
+   var settings=AudioControls.SubtitleSettings(current.Root);
    if(start){string notes=((TextBox)View.FindName("NotesRoot")).Text.Trim();if(AudioControls.Classroom(current.Root)&&!Directory.Exists(notes))throw new ArgumentException("请填写现有笔记目录");settings["notesRoot"]=notes;settings["lesson"]=((TextBox)View.FindName("NotesLesson")).Text.Trim();settings["startedAt"]=AudioControls.Now();settings["deadline"]=AudioControls.Now()+10800;settings["budgetYuan"]=5;}
-   settings["enabled"]=start;AudioControls.Save(file,settings);
+   settings["enabled"]=start;AudioControls.SaveSubtitleSettings(current.Root,settings);
    if(start)try{
-    string python=AudioControls.Python(current.Root),script=Path.Combine(current.Root,"subtitle_maintenance.py"),registry=Path.Combine(AudioControls.ToolboxRoot(packageRoot),"registry.mjs");
+    string python=AudioControls.Python(current.Root),script=Path.Combine(AudioControls.CodeRoot(current.Root),"subtitle_maintenance.py"),registry=Path.Combine(AudioControls.ToolboxRoot(packageRoot),"registry.mjs");
     if(!File.Exists(script)||!File.Exists(python))throw new FileNotFoundException("字幕初筛运行文件缺失");
-    Process.Start(new ProcessStartInfo("node.exe","\""+registry+"\" run --owner chatgpt --name Subtitle-Context-Maintenance --desc \"只读课程参考、字幕主动初筛；独立于笔记维护\" -- \""+python+"\" \""+script+"\""){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=current.Root});
-   }catch{settings["enabled"]=false;AudioControls.Save(file,settings);throw;}
+    Process.Start(new ProcessStartInfo("node.exe","\""+registry+"\" run --owner chatgpt --name Subtitle-Context-Maintenance --desc \"只读课程参考、字幕主动初筛；独立于笔记维护\" -- \""+python+"\" \""+script+"\""+AudioControls.RootArgument(current.Root)){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=current.Root});
+   }catch{settings["enabled"]=false;AudioControls.SaveSubtitleSettings(current.Root,settings);throw;}
    Set("SubtitleStatus",start?"已启动字幕AI：只读课程资料，字幕初筛独立计费":"已请求停止字幕AI；在途核对可能完成");Refresh();
   }
   void SaveNotes(bool start,bool pause){
    if(current==null)throw new InvalidOperationException("录音项目未连接");var settings=AudioControls.Notes(current.Root);string previousScope=settings.notesRoot+"\n"+settings.lesson;
-   if(pause){settings.enabled=false;AudioControls.Save(Path.Combine(current.Root,"notes-maintenance.json"),settings);Set("NotesStatus","已暂停新委派；已提交的当前批次可能继续完成。");return;}
+   if(pause){settings.enabled=false;AudioControls.SaveNotes(current.Root,settings);Set("NotesStatus","已暂停新委派；已提交的当前批次可能继续完成。");return;}
    settings.notesRoot=((TextBox)View.FindName("NotesRoot")).Text.Trim();settings.description=((TextBox)View.FindName("NotesDescription")).Text.Trim();settings.sessionId=Convert.ToString(((ComboBox)View.FindName("NotesSession")).SelectedValue);settings.model=Convert.ToString(((ComboBox)View.FindName("NotesModel")).SelectedValue);settings.lesson=((TextBox)View.FindName("NotesLesson")).Text.Trim();
    settings.strategy=Convert.ToString(((ComboBoxItem)((ComboBox)View.FindName("NotesStrategy")).SelectedItem).Tag);
    if(previousScope!=settings.notesRoot+"\n"+settings.lesson)settings.startedAt=0;
    Guid id;if(!Directory.Exists(settings.notesRoot)||!Path.IsPathRooted(settings.notesRoot)||String.IsNullOrWhiteSpace(settings.description)||!Guid.TryParse(settings.sessionId,out id))throw new ArgumentException("请填写现有笔记目录、维护要求，并选择一个已有会话");
    if(start&&!AudioControls.Classroom(current.Root))throw new InvalidOperationException("请先开启上课模式");
-   settings.enabled=start;if(start&&settings.startedAt<=0)settings.startedAt=AudioControls.Now();AudioControls.Save(Path.Combine(current.Root,"notes-maintenance.json"),settings);
+   settings.enabled=start;if(start&&settings.startedAt<=0)settings.startedAt=AudioControls.Now();AudioControls.SaveNotes(current.Root,settings);
    if(start){
-    string python=AudioControls.Python(current.Root),script=Path.Combine(current.Root,"notes_maintenance.py"),bridge=Path.Combine(packageRoot,"notes-bridge.mjs"),registry=Path.Combine(AudioControls.ToolboxRoot(packageRoot),"registry.mjs");
+    string python=AudioControls.Python(current.Root),script=Path.Combine(AudioControls.CodeRoot(current.Root),"notes_maintenance.py"),bridge=Path.Combine(packageRoot,"notes-bridge.mjs"),registry=Path.Combine(AudioControls.ToolboxRoot(packageRoot),"registry.mjs");
     try{if(!File.Exists(python)||!File.Exists(script)||!File.Exists(bridge)||!File.Exists(registry))throw new FileNotFoundException("课堂维护运行环境未安装完整");
-     Process.Start(new ProcessStartInfo("node.exe","\""+registry+"\" run --owner chatgpt --name Classroom-Notes-Maintenance --desc \"用户启用的第五学期笔记维护，暂停后停止新委派\" -- \""+python+"\" \""+script+"\" --bridge \""+bridge+"\""){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=current.Root});
-    }catch{settings.enabled=false;AudioControls.Save(Path.Combine(current.Root,"notes-maintenance.json"),settings);throw;}
+     Process.Start(new ProcessStartInfo("node.exe","\""+registry+"\" run --owner chatgpt --name Classroom-Notes-Maintenance --desc \"用户启用的第五学期笔记维护，暂停后停止新委派\" -- \""+python+"\" \""+script+"\" --bridge \""+bridge+"\""+AudioControls.RootArgument(current.Root)){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=current.Root});
+    }catch{settings.enabled=false;AudioControls.SaveNotes(current.Root,settings);throw;}
    }
    Set("NotesStatus",start?"已启用：按新增课堂材料及PPT骨架变化维护笔记":"配置已保存，尚未派工");Refresh();
   }
@@ -138,7 +146,7 @@ namespace AiAudioMemory {
    if(current==null)throw new InvalidOperationException("录音项目未连接");bool enabled=!AudioControls.Classroom(current.Root);AudioControls.Classroom(current.Root,enabled);if(enabled){vocabulary.Open();camera.Open();ReloadNotesSessions();}else {vocabulary.Close();camera.Close();}ApplyClassroom(current.Root);if(enabled)((TabControl)View.FindName("WorkspaceTabs")).SelectedIndex=1;Refresh();
   }
   void ApplyClassroom(string root){
-   bool enabled=AudioControls.Classroom(root);var state=Json(Path.Combine(root,"notes-maintenance-state.json"));bool draining=!enabled&&S(state,"active").Equals("True",StringComparison.OrdinalIgnoreCase);
+   bool enabled=AudioControls.Classroom(root);var state=current!=null&&current.NotesState!=null?current.NotesState:Json(Path.Combine(root,"notes-maintenance-state.json"));bool draining=!enabled&&S(state,"active").Equals("True",StringComparison.OrdinalIgnoreCase);
    ((Button)View.FindName("ToggleClassroom")).Content=enabled?"结束上课模式":"开启上课模式";Set("ClassroomStatus",enabled?"已开启：现场采集、视觉词表与笔记AI可用。录音与转写在日常功能中查看。":draining?"课堂任务收尾中；已停止新派工":"尚未开启。课堂功能集中在此；日常录音与转写独立运行。");
    ((TabItem)View.FindName("ClassroomCameraTab")).Visibility=enabled?Visibility.Visible:Visibility.Collapsed;
    ((TabItem)View.FindName("ClassroomContextTab")).Visibility=Visibility.Visible;
@@ -153,13 +161,13 @@ namespace AiAudioMemory {
   }
   void GenerateContext(){
    if(current==null)throw new InvalidOperationException("录音项目未连接");
-   string python=AudioControls.Python(current.Root),script=Path.Combine(current.Root,"context_auto.py");
-   if(!File.Exists(python)||!File.Exists(script))throw new FileNotFoundException("情景生成运行文件缺失");
-   Process.Start(new ProcessStartInfo(python,"\""+script+"\" --once"){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=current.Root});
+   string python=AudioControls.Python(current.Root),script=Path.Combine(AudioControls.CodeRoot(current.Root),"context_auto.py"),registry=Path.Combine(AudioControls.ToolboxRoot(packageRoot),"registry.mjs");
+   if(!File.Exists(python)||!File.Exists(script)||!File.Exists(registry))throw new FileNotFoundException("情景生成运行文件缺失");
+   Process.Start(new ProcessStartInfo("node.exe","\""+registry+"\" run --owner GPT --name Context-Generate-"+Guid.NewGuid().ToString("N")+" --desc \"生成情景候选\" -- \""+python+"\" \""+script+"\" --once"+AudioControls.RootArgument(current.Root)){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=current.Root});
    Set("ContextStatus","正在生成候选；完成后会自动刷新，不会覆盖正式情景卡。");
   }
   void OpenContextCandidate(){
-   if(current==null)return;string candidate=Path.Combine(current.Root,"out","context-auto","candidate.json");if(!File.Exists(candidate))throw new FileNotFoundException("尚未生成自动情景");Process.Start(new ProcessStartInfo(candidate){UseShellExecute=true});
+   if(current==null)return;string candidate=AudioControls.UsesService(current.Root)?new JavaScriptSerializer().Deserialize<string>(AudioControls.Control(current.Root,"context-path")):Path.Combine(current.Root,"out","context-auto","candidate.json");if(!AudioControls.UsesService(current.Root)&&!File.Exists(candidate))throw new FileNotFoundException("尚未生成自动情景");Process.Start(new ProcessStartInfo(candidate){UseShellExecute=true});
   }
   void Click(string name,Action action){((Button)View.FindName(name)).Click+=(s,e)=>{try{action();}catch(Exception ex){Set("Feedback",ex.Message);}};}
   void Copy(string value,string message){Clipboard.SetText(value??"");Set("Feedback",message);}
@@ -242,33 +250,33 @@ namespace AiAudioMemory {
   void SwitchTranscription(string mode){
    if(current==null||String.IsNullOrEmpty(current.Root))throw new InvalidOperationException("录音项目未连接");
    if(mode==current.Mode)return;
-   string python=AudioControls.Python(current.Root),script=Path.Combine(current.Root,"cloud_asr_trial.py"),registry=Path.Combine(AudioControls.ToolboxRoot(packageRoot),"registry.mjs");
+   string python=AudioControls.Python(current.Root),script=Path.Combine(AudioControls.CodeRoot(current.Root),"cloud_asr_trial.py"),registry=Path.Combine(AudioControls.ToolboxRoot(packageRoot),"registry.mjs");
    if(mode=="cloud"&&(!File.Exists(python)||!File.Exists(script)||!File.Exists(registry)))throw new FileNotFoundException("大模型转写运行环境不完整");
    AudioControls.Switch(current.Root,mode);
-   if(mode=="cloud")try{Process.Start(new ProcessStartInfo("node.exe","\""+registry+"\" run --owner chatgpt --name Audio-Cloud-Transcription --desc \"用户选择的大模型转写，切回本地停止新请求\" -- \""+python+"\" \""+script+"\" --controlled"){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=current.Root});}catch{AudioControls.Switch(current.Root,"local");throw;}
+   if(mode=="cloud")try{Process.Start(new ProcessStartInfo("node.exe","\""+registry+"\" run --owner chatgpt --name Audio-Cloud-Transcription --desc \"用户选择的大模型转写，切回本地停止新请求\" -- \""+python+"\" \""+script+"\" --controlled"+AudioControls.RootArgument(current.Root)){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=current.Root});}catch{AudioControls.Switch(current.Root,"local");throw;}
    Set("Feedback",mode=="cloud"?"已选择2.0 Mini；正在启动，每次最多3小时、估算停止线5元":"已切回本地；不再发起新转写请求，已发送的一片可能仍返回并计费");Refresh();
   }
   void SubmitAnnotations(){
    if(current==null)return;
-   string python=AudioControls.Python(current.Root),script=Path.Combine(current.Root,"annotation_worker.py"),registry=Path.Combine(AudioControls.ToolboxRoot(packageRoot),"registry.mjs");
+   string python=AudioControls.Python(current.Root),script=Path.Combine(AudioControls.CodeRoot(current.Root),"annotation_worker.py"),registry=Path.Combine(AudioControls.ToolboxRoot(packageRoot),"registry.mjs");
    if(!File.Exists(python)||!File.Exists(script)||!File.Exists(registry))throw new FileNotFoundException("修订执行器未安装完整");
    string batch=Corrections.Submit(current.Root);
    try{
-    Process.Start(new ProcessStartInfo("node.exe","\""+registry+"\" run --owner chatgpt --name Audio-Annotation-Maintenance --desc \"课堂批注修订，完成自动注销\" -- \""+python+"\" \""+script+"\" --batch "+batch){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=current.Root});
+    Process.Start(new ProcessStartInfo("node.exe","\""+registry+"\" run --owner chatgpt --name Audio-Annotation-Maintenance --desc \"课堂批注修订，完成自动注销\" -- \""+python+"\" \""+script+"\" --batch "+batch+AudioControls.RootArgument(current.Root)){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=current.Root});
     Set("Feedback","批注已提交，完成后正文会自动更新");
    }catch(Exception error){Corrections.FailBatch(current.Root,batch,error.Message);throw;}
    Refresh();
   }
   void Set(string name,string value){var text=(TextBlock)View.FindName(name);if(text.Text!=value)text.Text=value;}
   public void Open(){vocabulary.Open();camera.Open();closed=false;timer.Start();Refresh();}
-  public void Close(){camera.Close();if(current!=null&&AudioControls.Classroom(current.Root))AudioControls.Classroom(current.Root,false);vocabulary.Close();closed=true;timer.Stop();if(selectionPopup!=null)selectionPopup.IsOpen=false;if(annotationPopup!=null)annotationPopup.IsOpen=false;}
+  public void Close(){camera.Close();vocabulary.Close();closed=true;timer.Stop();if(selectionPopup!=null)selectionPopup.IsOpen=false;if(annotationPopup!=null)annotationPopup.IsOpen=false;}
   void Refresh(){if(closed)return;vocabulary.RefreshSuite();if(worker.IsBusy)return;worker.RunWorkerAsync(new[]{ResolveRuntime(packageRoot),currentLog});}
   public static string ResolveRuntime(string package){
    try{
-   string direct=Path.GetDirectoryName(package);if(File.Exists(Path.Combine(direct,"recorder.py")))return direct;
+   string direct=Path.GetDirectoryName(package);if(File.Exists(Path.Combine(direct,"recorder.py")))return AudioControls.DataRoot(direct);
    string host=AudioControls.ToolboxRoot(package);
    var config=Json(Path.Combine(host,"data","module-subscriptions.json"));object bindings,value;
-   if(config.TryGetValue("bindings",out bindings) && bindings is Dictionary<string,object> && ((Dictionary<string,object>)bindings).TryGetValue("audio-memory",out value))return Path.GetFullPath(Convert.ToString(value));
+   if(config.TryGetValue("bindings",out bindings) && bindings is Dictionary<string,object> && ((Dictionary<string,object>)bindings).TryGetValue("audio-memory",out value))return AudioControls.DataRoot(Convert.ToString(value));
    }catch(IOException){}catch(ArgumentException){}catch(InvalidOperationException){}
    return "";
   }
@@ -296,24 +304,26 @@ namespace AiAudioMemory {
   }
   void Apply(AudioSnapshot data){
    ApplyClassroom(data.Root??"");
-   var autoState=Json(Path.Combine(data.Root??"","out","context-auto","state.json"));var candidate=Json(Path.Combine(data.Root??"","out","context-auto","candidate.json"));object body;string narrative="";if(candidate.TryGetValue("candidate",out body)&&body is Dictionary<string,object>){var content=(Dictionary<string,object>)body;object elements;if(content.TryGetValue("sixElements",out elements)&&elements is Dictionary<string,object>){var six=(Dictionary<string,object>)elements;string[] keys={"time","place","people","cause","process","result"};string[] labels={"时间","地点","人物","起因","经过","结果"};for(int i=0;i<keys.Length;i++){object entry;string value="未知";if(six.TryGetValue(keys[i],out entry)&&entry is Dictionary<string,object>){string v=S((Dictionary<string,object>)entry,"value");if(!String.IsNullOrWhiteSpace(v))value=v;}narrative+=labels[i]+"："+value+"\n\n";}}narrative+="情节：\n"+S(content,"narrative");}Set("ContextStatus","自动情景："+S(autoState,"status")+" · "+S(autoState,"message"));((TextBox)View.FindName("ContextNarrative")).Text=narrative;
+   var autoState=data.ContextState??Json(Path.Combine(data.Root??"","out","context-auto","state.json"));var candidate=data.ContextCandidate??Json(Path.Combine(data.Root??"","out","context-auto","candidate.json"));object body;string narrative="";if(candidate.TryGetValue("candidate",out body)&&body is Dictionary<string,object>){var content=(Dictionary<string,object>)body;object elements;if(content.TryGetValue("sixElements",out elements)&&elements is Dictionary<string,object>){var six=(Dictionary<string,object>)elements;string[] keys={"time","place","people","cause","process","result"};string[] labels={"时间","地点","人物","起因","经过","结果"};for(int i=0;i<keys.Length;i++){object entry;string value="未知";if(six.TryGetValue(keys[i],out entry)&&entry is Dictionary<string,object>){string v=S((Dictionary<string,object>)entry,"value");if(!String.IsNullOrWhiteSpace(v))value=v;}narrative+=labels[i]+"："+value+"\n\n";}}narrative+="情节：\n"+S(content,"narrative");}Set("ContextStatus","自动情景："+S(autoState,"status")+" · "+S(autoState,"message"));((TextBox)View.FindName("ContextNarrative")).Text=narrative;
    if(notesRootLoaded!=data.Root&&!String.IsNullOrEmpty(data.Root)){
-    var settings=AudioControls.Notes(data.Root);((TextBox)View.FindName("NotesRoot")).Text=settings.notesRoot;((TextBox)View.FindName("NotesDescription")).Text=settings.description;((TextBox)View.FindName("NotesLesson")).Text=settings.lesson;notesModelPending=settings.model;
+    var settings=data.NotesConfig??AudioControls.Notes(data.Root);((TextBox)View.FindName("NotesRoot")).Text=settings.notesRoot;((TextBox)View.FindName("NotesDescription")).Text=settings.description;((TextBox)View.FindName("NotesLesson")).Text=settings.lesson;notesModelPending=settings.model;
     foreach(ComboBoxItem option in ((ComboBox)View.FindName("NotesStrategy")).Items)if(Convert.ToString(option.Tag)==settings.strategy)((ComboBox)View.FindName("NotesStrategy")).SelectedItem=option;
     notesRootLoaded=data.Root;if(current!=null&&AudioControls.Classroom(data.Root))ReloadNotesSessions();
    }
-   UpdateSubtitleConfirmation(data.Root??"");
-   var subtitle=Json(Path.Combine(data.Root??"","subtitle-maintenance-state.json"));var subtitleConfig=Json(Path.Combine(data.Root??"","subtitle-maintenance.json"));
+   UpdateSubtitleConfirmation(data.Root??"",data.Confirmations);
+   var subtitle=data.SubtitleState??Json(Path.Combine(data.Root??"","subtitle-maintenance-state.json"));var subtitleConfig=data.SubtitleSettings??AudioControls.SubtitleSettings(data.Root??"");
    bool subActive=S(subtitle,"active").Equals("True",StringComparison.OrdinalIgnoreCase);bool subEnabled=S(subtitleConfig,"enabled").Equals("True",StringComparison.OrdinalIgnoreCase);
    if(subActive&&N(subtitle,"pid")>0)try{if(Process.GetProcessById((int)N(subtitle,"pid")).HasExited)subActive=false;}catch(ArgumentException){subActive=false;}
    if(!subActive&&subEnabled&&AudioControls.Now()-N(subtitleConfig,"startedAt")>15){subEnabled=false;}
    ((Button)View.FindName("StartSubtitle")).IsEnabled=!subEnabled&&!subActive;((Button)View.FindName("PauseSubtitle")).IsEnabled=subEnabled||subActive;
    Set("SubtitleStatus",(subActive?"":"已停止 · ")+(subtitle.Count==0?"尚未启动字幕初筛":S(subtitle,"status"))+(String.IsNullOrEmpty(S(subtitle,"latestReason"))?"":" · "+S(subtitle,"latestReason"))+(String.IsNullOrEmpty(S(subtitle,"error"))?"":" · "+S(subtitle,"error")));
-   var notesState=Json(Path.Combine(data.Root??"","notes-maintenance-state.json"));if(notesState.Count>0){
-    string noteStatus=(AudioControls.Notes(data.Root).enabled?"":"已暂停 · ")+S(notesState,"status")+" · 已完成 "+N(notesState,"completedBatches").ToString("0")+" 批"+(String.IsNullOrEmpty(S(notesState,"latestSummary"))?"":"\n"+S(notesState,"latestSummary"))+(String.IsNullOrEmpty(S(notesState,"error"))?"":" · "+S(notesState,"error"));
+   var notesState=data.NotesState??Json(Path.Combine(data.Root??"","notes-maintenance-state.json"));if(notesState.Count>0){
+    string noteStatus=((data.NotesConfig??AudioControls.Notes(data.Root)).enabled?"":"已暂停 · ")+S(notesState,"status")+" · 已完成 "+N(notesState,"completedBatches").ToString("0")+" 批"+(String.IsNullOrEmpty(S(notesState,"latestSummary"))?"":"\n"+S(notesState,"latestSummary"))+(String.IsNullOrEmpty(S(notesState,"error"))?"":" · "+S(notesState,"error"));
     string job=S(notesState,"activeJobId");if(S(notesState,"active").Equals("True",StringComparison.OrdinalIgnoreCase)&&Regex.IsMatch(job,@"^classroom-[a-f0-9]{32}$")){
-     string receipt=Path.Combine(AudioControls.ToolboxRoot(packageRoot),"modules","collaboration-canvas","data","workbuddy-dispatch",job+".json");
-     if(File.Exists(receipt)&&new FileInfo(receipt).Length<1024*1024){var report=Json(receipt);if(S(report,"state")=="waiting-permission")noteStatus="维护AI需要工具确认，请在工作台对应会话中检查；当前材料保留";}
+     string jobState="";
+     if(AudioControls.UsesService(data.Root))jobState=new JavaScriptSerializer().Deserialize<string>(AudioControls.Control(data.Root,"notes-job",new{hostRoot=AudioControls.ToolboxRoot(packageRoot),job=job}));
+     else{string receipt=Path.Combine(AudioControls.ToolboxRoot(packageRoot),"modules","collaboration-canvas","data","workbuddy-dispatch",job+".json");if(File.Exists(receipt)&&new FileInfo(receipt).Length<1024*1024)jobState=S(Json(receipt),"state");}
+     if(jobState=="waiting-permission")noteStatus="维护AI需要工具确认，请在工作台对应会话中检查；当前材料保留";
     }Set("NotesStatus",noteStatus);
    }
    foreach(string mode in new[]{"local","cloud"}){var button=(Button)View.FindName(mode=="local"?"UseLocal":"UseCloud");bool selected=data.Mode==mode;button.Background=selected?new SolidColorBrush(Color.FromRgb(42,46,54)):new SolidColorBrush(Color.FromRgb(238,239,242));button.Foreground=selected?Brushes.White:Brushes.DimGray;}
@@ -345,9 +355,21 @@ namespace AiAudioMemory {
    }
   }
   static bool Within(string root,string file){return Path.GetFullPath(file).StartsWith(Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar)+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase);}
+  static AudioSnapshot ServiceSnapshot(string root,string log,DateTime now){
+   string code=AudioControls.CodeRoot(root),python=AudioControls.Python(root),script=Path.Combine(code,"material_snapshot.py");
+   string epoch=(new DateTimeOffset(now).ToUnixTimeMilliseconds()/1000.0).ToString(CultureInfo.InvariantCulture);
+   var info=new ProcessStartInfo(python,"\""+script+"\" --workbench --root \""+root+"\" --log \""+log+"\" --now "+epoch){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=code,RedirectStandardOutput=true,RedirectStandardError=true,StandardOutputEncoding=Encoding.UTF8,StandardErrorEncoding=Encoding.UTF8};
+   info.EnvironmentVariables["PYTHONUTF8"]="1";
+   using(var process=Process.Start(info)){
+    string output=process.StandardOutput.ReadToEnd(),error=process.StandardError.ReadToEnd();process.WaitForExit();
+    if(process.ExitCode!=0)throw new InvalidOperationException(String.IsNullOrWhiteSpace(error)?"材料服务失败":error.Trim());
+    return new JavaScriptSerializer{MaxJsonLength=16*1024*1024}.Deserialize<AudioSnapshot>(output);
+   }
+  }
   public static AudioSnapshot ReadSnapshot(string root,string log,DateTime now){
    var result=new AudioSnapshot{Root=root,Recording="未连接",RecordingDetail="请在模组管理设置录音项目目录",Model="未连接",Latency="暂无识别结果",Cost="—",Deadline="未读取云端试验",Health="录音项目目录未配置",Transcript="暂无实时转写",TranscriptMeta="暂无转写",Memory="今天尚未生成记忆结果",Log="暂无日志",Diagnostic="目录未配置",MaterialPath=""};
    if(String.IsNullOrEmpty(root)||!Directory.Exists(root))return result;
+   if(!String.Equals(AudioControls.CodeRoot(root),root,StringComparison.OrdinalIgnoreCase))return ServiceSnapshot(root,log,now);
    string latest="",record=Path.Combine(root,"record");DateTime last=DateTime.MinValue;
    if(Directory.Exists(record))foreach(string file in Directory.GetFiles(record,"*.wav")){DateTime time=File.GetLastWriteTime(file);if(time>last){last=time;latest=file;}}
    double age=last==DateTime.MinValue?Double.PositiveInfinity:(now-last).TotalSeconds;
@@ -368,7 +390,7 @@ namespace AiAudioMemory {
    var corrections=Corrections.Read(root);result.Annotations=corrections.annotations;
    int begin=Math.Max(0,rows.Count-100);var body=new StringBuilder();
    for(int i=begin;i<rows.Count;i++){
-    var row=rows[i];string raw=Corrections.Normalize(S(row,"text")),key=Corrections.Key(timeline,S(row,"file"),N(row,"start"),N(row,"end"));CorrectionRecord corrected;
+    var row=rows[i];string raw=Corrections.Normalize(S(row,"text")),key=Corrections.FindRecord(corrections,timeline,S(row,"file"),N(row,"start"),N(row,"end"),raw);CorrectionRecord corrected;
     string effective=raw;int revision=0;
     if(corrections.records.TryGetValue(key,out corrected)&&corrected.original==raw){effective=corrected.text;revision=corrected.revision;}
     body.Append(S(row,"t")).Append("   ");string rendered=effective.Replace("\n",Environment.NewLine);

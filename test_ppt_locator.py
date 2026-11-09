@@ -54,15 +54,20 @@ class LocatorTests(unittest.TestCase):
   self.assertIsNone(locator.locked);self.assertIsNone(results[-1])
  def test_capture_waits_for_auto_region_then_extracts(self):
   from scene_capture import Capture
-  with patch('ppt_locator.LocalSmallOcr',return_value=lambda _:GOOD):capture=Capture(self.root)
-  data=raw(scene())
-  with patch('scene_capture.time.time',return_value=0):capture.image(data)
-  self.assertEqual(capture.slides.items,[])
-  with patch('scene_capture.time.time',return_value=3):capture.image(data)
-  self.wait(capture.locator);self.assertIsNotNone(capture.slides.roi)
-  for at in (100,101,102):
-   with patch('scene_capture.time.time',return_value=at):capture.image(data)
-  self.assertEqual(len(capture.slides.items),1);self.assertEqual(capture.locator.ocr_calls,1)
-  capture.locator.close()
+  with patch('ppt_locator.LocalSmallOcr',return_value=lambda _:GOOD), \
+       patch('ocr_unit.run',return_value={'errors':[]}), patch('visual_worker.publish'):
+   capture=Capture(self.root)
+   try:
+    data=raw(scene())
+    with patch('scene_capture.time.time',return_value=0):capture.image(data)
+    self.assertEqual(capture.slides.items,[])
+    with patch('scene_capture.time.time',return_value=3):capture.image(data)
+    self.wait(capture.locator);self.assertIsNotNone(capture.slides.roi)
+    for at in (100,101,102):
+     with patch('scene_capture.time.time',return_value=at):capture.image(data)
+    self.assertEqual(len(capture.slides.items),1);self.assertEqual(capture.locator.ocr_calls,1)
+   finally:
+    capture.locator.close();capture.ocr_queue.put(None);capture.ocr_thread.join(timeout=15)
+    self.assertFalse(capture.ocr_thread.is_alive())
 
 if __name__=='__main__':unittest.main()

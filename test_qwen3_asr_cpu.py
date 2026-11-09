@@ -5,8 +5,6 @@ import json
 import time
 from pathlib import Path
 
-import torch
-from transformers import AutoModelForMultimodalLM, AutoProcessor
 
 
 MODEL_ID = "Qwen/Qwen3-ASR-0.6B-hf"
@@ -26,6 +24,8 @@ def available_memory_mb():
 
 
 def main():
+    import torch
+    from transformers import AutoModelForMultimodalLM, AutoProcessor
     parser = argparse.ArgumentParser()
     parser.add_argument("audio", type=Path)
     parser.add_argument("--output", type=Path, required=True)

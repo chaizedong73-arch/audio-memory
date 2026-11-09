@@ -4,8 +4,8 @@ import re
 import sys
 
 ROOT=Path(__file__).resolve().parent
-SKIP={'.venv','venv','out','record','models','__pycache__','.git','config'}
-SUFFIX={'.py','.ps1','.cs','.xaml','.md','.json','.html','.js','.mjs','.cmd','.sh','.txt'}
+SKIP={'.venv','venv','out','record','models','__pycache__','.git','config','node_modules','dist','build','.gradle','test-artifacts'}
+SUFFIX={'.py','.ps1','.cs','.xaml','.md','.json','.html','.js','.cjs','.mjs','.ts','.tsx','.jsx','.cmd','.sh','.txt'}
 RULES={
     'personal Windows path':re.compile(r'(?i)(?:[A-Z]:[\\/]+)Users[\\/]+(?!<|\{|%)[^\\/\s"\']+'),
     'private key':re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),

@@ -1,4 +1,4 @@
-import json,tempfile,unittest
+import json,tempfile,unittest,subprocess,sys
 from pathlib import Path
 import visual_experiment
 from visual_vocabulary_test import run
@@ -13,6 +13,12 @@ class ContractTests(unittest.TestCase):
  def test_raw_non_json_is_not_lost(self):
   result,raw,nonstandard=visual_experiment.tolerant_content('图形A → 图形B\n这个箭头含义不确定。')
   self.assertTrue(nonstandard);self.assertEqual(result['text'],raw);self.assertEqual(result['words'],[])
+ def test_finalize_command_writes_only_to_selected_data_root(self):
+  run_dir=self.root/'out/visual-vocabulary/runs/one';run_dir.mkdir(parents=True)
+  request=run_dir/'request.json';request.write_text(json.dumps({'model':'test','task':'vision'}),encoding='utf-8')
+  (run_dir/'result.json').write_text(json.dumps({'text':'fixture','task':'vision'}),encoding='utf-8')
+  subprocess.run([sys.executable,str(Path(visual_experiment.__file__)),'--root',str(self.root),'--finalize',str(request)],check=True,capture_output=True)
+  self.assertTrue((self.root/'out/visual-vocabulary/experiment/实验记录.md').is_file())
  def test_lossless_ledger_and_failure(self):
   p=self.root/'out/visual-vocabulary/runs/one';p.mkdir(parents=True)
   ledger=visual_experiment.record(self.root,p,{'model':'test','task':'vision','caseId':'complex'},{'text':'visible A','rawAnswer':'原答\nA → B','task':'vision','warnings':[{'code':'nonstandard-format'}]})

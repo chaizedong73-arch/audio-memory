@@ -9,7 +9,9 @@ from scene_capture import Capture,handler,PORT
 class SceneTests(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name);set_enabled(self.root,True);self.c=Capture(self.root)
- def tearDown(self):self.tmp.cleanup()
+ def tearDown(self):
+  self.c.locator.close();self.c.ocr_queue.put(None);self.c.ocr_thread.join(timeout=15)
+  self.assertFalse(self.c.ocr_thread.is_alive());self.tmp.cleanup()
  def image(self):
   buf=io.BytesIO();Image.new('RGB',(320,180),'#234567').save(buf,'PNG');return buf.getvalue()
  def test_snapshot_provenance_and_locality(self):
@@ -19,20 +21,26 @@ class SceneTests(unittest.TestCase):
  def begin(self):
   import time
   self.c.last_phone=time.time();self.c.command('record');return self.c.begin('video/webm;codecs=vp8')
+ @unittest.skip('手机采集按用户要求仅截取 PPT，录像入口已移除')
  def test_order_retry_finalize(self):
   sid=self.begin();self.c.chunk(sid,0,b'header');self.c.chunk(sid,0,b'header')
   with self.assertRaises(ValueError):self.c.chunk(sid,2,b'bad')
   self.c.chunk(sid,1,b'body');self.c.finish(sid)
   self.assertEqual(self.c.record_path.read_bytes(),b'headerbody');self.assertEqual(self.c.receipt['state'],'saved')
   self.assertNotIn('.partial',self.c.record_path.name)
+ @unittest.skip('手机采集按用户要求仅截取 PPT，录像入口已移除')
  def test_disconnect_retains_partial(self):
   sid=self.begin();self.c.chunk(sid,0,b'header');self.c.finish(sid,False)
   self.assertEqual(self.c.receipt['state'],'incomplete');self.assertTrue(self.c.record_path.exists())
+ def test_phone_capture_rejects_recording(self):
+  with self.assertRaisesRegex(ValueError, '不保存录像'):self.c.command('record')
+  self.assertFalse((self.root/'record').exists())
  def test_mode_and_file_validation(self):
   set_enabled(self.root,False)
   with self.assertRaises(ValueError):self.c.command('record')
   with self.assertRaises((ValueError,OSError)):self.c.image(b'not png')
   with self.assertRaises(ValueError):self.c.analyze('other')
+ @unittest.skip('手机采集按用户要求仅截取 PPT，录像入口已移除')
  def test_low_disk_protects_existing(self):
   sid=self.begin()
   with patch('scene_capture.shutil.disk_usage') as disk:
@@ -76,7 +84,7 @@ class UsbTests(unittest.TestCase):
    c=Capture(root);c.save()
    with patch('scene_usb.socket.create_connection'),patch('scene_usb.subprocess.run') as run,patch('scene_usb.subprocess.Popen') as spawn:
     run.return_value.returncode=0;run.return_value.stdout='List of devices attached\nphone unauthorized\n';run.return_value.stderr=''
-    with self.assertRaisesRegex(ValueError,'USB调试'):scene_usb.connect(root)
+    with self.assertRaisesRegex(ValueError,'USB调试'):scene_usb.connect(root,tools_root=root)
     spawn.assert_not_called();self.assertEqual(run.call_count,1)
  def test_shared_server_cleanup_never_kills_server(self):
   import scene_usb
@@ -85,6 +93,6 @@ class UsbTests(unittest.TestCase):
    c=Capture(root);c.save();data=json.loads((c.folder/'runtime.json').read_text());data.update(adbPort=5037,adbOwned=False,usbSerial='phone')
    (c.folder/'runtime.json').write_text(json.dumps(data))
    with patch('scene_usb.subprocess.run') as run,patch('scene_usb.socket.create_connection'):
-    scene_usb.cleanup(root);self.assertEqual(run.call_count,1);self.assertNotIn('kill-server',run.call_args.args[0])
+    scene_usb.cleanup(root,tools_root=root);self.assertEqual(run.call_count,1);self.assertNotIn('kill-server',run.call_args.args[0])
 
 if __name__=='__main__':unittest.main()

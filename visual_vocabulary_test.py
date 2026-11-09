@@ -2,7 +2,7 @@
 import argparse,base64,hashlib,json,time,uuid,urllib.request
 from pathlib import Path
 from notes_maintenance import HERE,save,read
-from cloud_asr_trial import CONFIG,request as ark_request
+from cloud_asr_trial import request as ark_request
 from ppt_concepts import index_images
 from visual_vocabulary_schema import build_structure
 import visual_lab
@@ -15,7 +15,7 @@ DEFAULTS=[LOCAL,{'id':'doubao-seed-2-0-mini-260428','label':'豆包 2.0 Mini · 
  {'id':'doubao-seed-2-1-pro-260915','label':'豆包 2.1 Pro · 云端（较高费用）','local':False}]
 
 def models(root=HERE):
- c=read(CONFIG);req=urllib.request.Request(c['ark_base_url']+'/models',headers={'Authorization':'Bearer '+c['ark_api_key']})
+ c=read(Path(root)/'config'/'ark_config.json');req=urllib.request.Request(c['ark_base_url']+'/models',headers={'Authorization':'Bearer '+c['ark_api_key']})
  with urllib.request.urlopen(req,timeout=20) as response:catalog=json.load(response)
  choices=[LOCAL]+visual_lab.choices(root);seen=set()
  for row in sorted(catalog.get('data',[]),key=lambda r:r.get('created',0),reverse=True):
@@ -64,8 +64,8 @@ def run(job,root=HERE,ask=ark_request,ocr_index=index_images):
  elif model=='local:rapidocr':
   text,words=visual_lab.rapid(file,width,height);words=normalize_words(words)
  elif model==LOCAL['id']:
-  ocr_root=root if job.get('cache',True) else area/'ocr-attempts'/uuid.uuid4().hex
-  result=ocr_index([{'path':str(file)}],ocr_root)[0]
+  folder=None if job.get('cache',True) else area/'ocr-attempts'/uuid.uuid4().hex
+  result=(ocr_index([{'path':str(file)}],root,folder=folder) if ocr_index is index_images else ocr_index([{'path':str(file)}],root))[0]
   if result.get('error') or result.get('pending'):raise ValueError(result.get('error','本地OCR尚未完成'))
   words=[]
   for item in result.get('words',[]):
@@ -80,7 +80,7 @@ def run(job,root=HERE,ask=ark_request,ocr_index=index_images):
   body={'model':model,'thinking':{'type':'disabled'},'max_tokens':8000,'messages':[{'role':'user','content':[{'type':'image_url','image_url':{'url':'data:image/png;base64,'+base64.b64encode(raw).decode()}},{'type':'text','text':instruction}]}]}
   known=next((m for m in read(area/'models.json',DEFAULTS) if m['id']==model),{})
   if known.get('structured',model in ('doubao-seed-2-0-mini-260428','doubao-seed-2-0-lite-260428','doubao-seed-2-1-pro-260915')):body['response_format']={'type':'json_object'}
-  response=visual_lab.local_vision(model,body,root) if model.startswith('local-vlm:') else visual_lab.request(model,body,root) if model.startswith('custom:') else ask(body)
+  response=visual_lab.local_vision(model,body,root) if model.startswith('local-vlm:') else visual_lab.request(model,body,root) if model.startswith('custom:') else ask(body,config_path=Path(root)/'config'/'ark_config.json') if ask is ark_request else ask(body)
   trace=job.get('_runDir')
   if trace:save(Path(trace)/'raw-response.json',response)
   truncated=response['choices'][0].get('finish_reason')=='length'
@@ -122,26 +122,26 @@ def upgrade(result):
  return dict(result,**structure,schemaVersion=2,structureVersion='visual-vocabulary-2')
 
 if __name__=='__main__':
- parser=argparse.ArgumentParser();parser.add_argument('--request');parser.add_argument('--models',action='store_true');args=parser.parse_args()
+ parser=argparse.ArgumentParser();parser.add_argument('--request');parser.add_argument('--models',action='store_true');parser.add_argument('--root',type=Path,default=HERE);args=parser.parse_args();root=args.root.resolve()
  if args.models:
-  try:models()
-  except Exception:save(HERE/'out/visual-vocabulary/models.json',[LOCAL]+visual_lab.choices(HERE)+DEFAULTS[1:])
+  try:models(root)
+  except Exception:save(root/'out/visual-vocabulary/models.json',[LOCAL]+visual_lab.choices(root)+DEFAULTS[1:])
   print('models-ready')
  else:
   target=Path(args.request).resolve()
-  if not target.is_relative_to((HERE/'out/visual-vocabulary/runs').resolve()) or target.name!='request.json':raise ValueError('测试请求位置无效')
+  if not target.is_relative_to((root/'out/visual-vocabulary/runs').resolve()) or target.name!='request.json':raise ValueError('测试请求位置无效')
   result_file=target.with_name('result.json')
   job=read(target);job['_runDir']=str(target.parent)
   try:
-   visual_experiment.validate_suite(HERE,job)
-   result=run(job)
+   visual_experiment.validate_suite(root,job)
+   result=run(job,root)
    try:
     from visual_benchmark import evaluate
-    report=evaluate(result,job['image'],HERE,target.with_name('evaluation.json'))
+    report=evaluate(result,job['image'],root,target.with_name('evaluation.json'))
     if report:result['benchmark']={'exactHits':report['exactHits'],'anchorCount':report['anchorCount'],'version':report['benchmarkVersion'],'provisional':True}
    except Exception as error:result['evaluationError']=str(error)[:300]
    save(result_file,result)
-   if job.get('caseId') and result.get('task')=='vision':visual_experiment.prepare_review(HERE,target.parent,job)
-   result['experimentDocument']=visual_experiment.record(HERE,target.parent,job,result);save(result_file,result);print('result-ready')
+   if job.get('caseId') and result.get('task')=='vision':visual_experiment.prepare_review(root,target.parent,job)
+   result['experimentDocument']=visual_experiment.record(root,target.parent,job,result);save(result_file,result);print('result-ready')
   except Exception as error:
-   result={'error':str(error)[:1500]};save(result_file,result);visual_experiment.record(HERE,target.parent,job,result);raise
+   result={'error':str(error)[:1500]};save(result_file,result);visual_experiment.record(root,target.parent,job,result);raise

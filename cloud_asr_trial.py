@@ -11,6 +11,7 @@ from pathlib import Path
 import time
 import urllib.request
 import wave
+from material_exchange import MaterialExchange
 
 HERE = Path(__file__).resolve().parent
 STATUS = HERE / 'cloud-asr-trial.json'
@@ -46,8 +47,8 @@ def payload(file):
     }
 
 
-def request(body, timeout=45):
-    config = json.loads(CONFIG.read_text(encoding='utf-8'))
+def request(body, timeout=45, config_path=None):
+    config = json.loads((Path(config_path) if config_path is not None else CONFIG).read_text(encoding='utf-8'))
     req = urllib.request.Request(config['ark_base_url'] + '/chat/completions',
         data=json.dumps(body).encode('utf-8'),
         headers={'Authorization': 'Bearer ' + config['ark_api_key'], 'Content-Type': 'application/json'})
@@ -121,7 +122,8 @@ def trial(hours=3, budget=5, smoke=False, resume=False, controlled=False):
         while time.time() < state['deadline']:
             if controlled and not permitted(control(), generation):
                 state['stopReason'] = 'user_switch'; return
-            files = sorted(f for f in (HERE / 'record').glob('*.wav') if f.stat().st_mtime >= cutoff)
+            exchange = MaterialExchange(HERE)
+            files = [Path(f) for f in exchange.recordings(('.wav',)) if Path(f).stat().st_mtime >= cutoff]
             if smoke:
                 files = files[-1:]
             for file in files:
@@ -175,7 +177,7 @@ def trial(hours=3, budget=5, smoke=False, resume=False, controlled=False):
                            't': start.strftime('%H:%M:%S'), 'date': start.strftime('%Y-%m-%d'),
                            'file': file.stem, 'text': text.strip(), 'model': MODEL,
                            'timing': 'whole_chunk_not_word_aligned', 'latencySeconds': round(time.time()-began, 2),
-                           'recordDirectory': str(HERE / 'record'), 'visualContext': visual}
+                           'recordDirectory': str(exchange.recording_directory()), 'visualContext': visual}
                     with (daydir / 'timeline.jsonl').open('a', encoding='utf-8') as output:
                         output.write(json.dumps(row, ensure_ascii=False) + '\n')
                     state['completed'].append(file.stem); state['latestDayDir'] = str(daydir)
@@ -227,7 +229,11 @@ if __name__ == '__main__':
     parser.add_argument('--smoke', action='store_true')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--controlled', action='store_true')
+    parser.add_argument('--root', type=Path, default=HERE)
     args = parser.parse_args()
+    HERE = args.root.resolve()
+    STATUS = HERE / 'cloud-asr-trial.json'
+    CONFIG = HERE / 'config' / 'ark_config.json'
     with (HERE / 'cloud-asr.stdout.log').open('a', encoding='utf-8', buffering=1) as log:
         with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
             trial(smoke=args.smoke, resume=args.resume, controlled=args.controlled)

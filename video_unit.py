@@ -1,4 +1,5 @@
 """Independently extract stable slide screenshots from a completed local video."""
+from data_location import data_root as default_data_root
 import argparse
 import json
 from pathlib import Path
@@ -23,7 +24,7 @@ def run(video, root=ROOT, interval=1.0, stop_file=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('video', type=Path)
-    parser.add_argument('--root', type=Path, default=ROOT)
+    parser.add_argument('--root', type=Path, default=default_data_root())
     parser.add_argument('--interval', type=float, default=1.0)
     parser.add_argument('--stop-file', type=Path)
     args = parser.parse_args()

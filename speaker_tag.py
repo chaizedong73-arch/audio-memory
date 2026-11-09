@@ -24,6 +24,7 @@
     python speaker_tag.py --out out --all                # 给所有天打标
     python speaker_tag.py --out out/20261021 --force     # 重打
 """
+from data_location import data_root as default_data_root
 import os, sys, json, glob, argparse, datetime
 import numpy as np
 
@@ -98,8 +99,8 @@ def tag_day(daydir, record_dir, threshold=None, force=False, verbose=True):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=os.path.join(HERE, "out"))
-    ap.add_argument("--record", default=os.path.join(HERE, "record"))
+    ap.add_argument("--out", default=os.path.join(str(default_data_root()), "out"))
+    ap.add_argument("--record", default=os.path.join(str(default_data_root()), "record"))
     ap.add_argument("--all", action="store_true", help="处理所有天目录")
     ap.add_argument("--force", action="store_true", help="忽略已打标记录，重打")
     ap.add_argument("--threshold", type=float, default=None)

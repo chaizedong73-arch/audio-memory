@@ -176,7 +176,7 @@ namespace AiAudioMemory {
   void Work(object sender,DoWorkEventArgs e){
    var args=(string[])e.Argument;string name="Visual-Vocabulary-"+Guid.NewGuid().ToString("N").Substring(0,10);
    try{
-    var info=new ProcessStartInfo("node.exe","\""+registry+"\" run --owner chatgpt --name "+name+" --desc \"单图视觉词表测试，完成自动退出\" -- \""+AudioControls.Python(args[0])+"\" \""+System.IO.Path.Combine(args[0],"visual_vocabulary_test.py")+"\" "+args[1]){UseShellExecute=false,CreateNoWindow=true,RedirectStandardError=true,RedirectStandardOutput=true};
+    var info=new ProcessStartInfo("node.exe","\""+registry+"\" run --owner chatgpt --name "+name+" --desc \"单图视觉词表测试，完成自动退出\" -- \""+AudioControls.Python(args[0])+"\" \""+System.IO.Path.Combine(AudioControls.CodeRoot(args[0]),"visual_vocabulary_test.py")+"\" "+args[1]+AudioControls.RootArgument(args[0])){UseShellExecute=false,CreateNoWindow=true,RedirectStandardError=true,RedirectStandardOutput=true};
     lock(gate){if(cancelled)return;active=Process.Start(info);}
     // Drain both pipes while the model runs; full pipes must not freeze a test.
     var stdout=active.StandardOutput.ReadToEndAsync();var stderr=active.StandardError.ReadToEndAsync();
@@ -219,7 +219,7 @@ namespace AiAudioMemory {
    if(String.IsNullOrEmpty(currentRequest)||!File.Exists(currentRequest))return;
    string output=System.IO.Path.Combine(System.IO.Path.GetDirectoryName(currentRequest),"result.json");if(File.Exists(output))return;
    AudioControls.Save(output,new Dictionary<string,object>{{"error",reason},{"cancelled",cancelled}});
-   try{using(var finalize=Process.Start(new ProcessStartInfo("node.exe","\""+registry+"\" run --owner chatgpt --name Visual-Finalize-"+Guid.NewGuid().ToString("N").Substring(0,8)+" --desc \"实验中断记录\" -- \""+AudioControls.Python(runtime())+"\" \""+System.IO.Path.Combine(runtime(),"visual_experiment.py")+"\" --finalize \""+currentRequest+"\""){UseShellExecute=false,CreateNoWindow=true})){finalize.WaitForExit(5000);}}catch{}
+   try{using(var finalize=Process.Start(new ProcessStartInfo("node.exe","\""+registry+"\" run --owner chatgpt --name Visual-Finalize-"+Guid.NewGuid().ToString("N").Substring(0,8)+" --desc \"实验中断记录\" -- \""+AudioControls.Python(runtime())+"\" \""+System.IO.Path.Combine(AudioControls.CodeRoot(runtime()),"visual_experiment.py")+"\" --finalize \""+currentRequest+"\""+AudioControls.RootArgument(runtime())){UseShellExecute=false,CreateNoWindow=true})){finalize.WaitForExit(5000);}}catch{}
   }
   void Kill(){
    // Only the process tree created and held by this test instance is eligible.

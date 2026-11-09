@@ -1,4 +1,6 @@
 """Periodic context candidate from recent transcript; original material stays intact."""
+from data_location import data_root as default_data_root
+from material_exchange import MaterialExchange
 import datetime as dt
 import hashlib
 import json
@@ -6,13 +8,30 @@ import math
 import os
 import time
 from pathlib import Path
-from context_candidate_generator import KEY, call, save
+from context_candidate_generator import key_file, call, save
 from transcript_quality import suspected_prompt_echo
-from transcript_corrections import load as load_corrections, effective
 
 ROOT=Path(__file__).resolve().parent
 OUT=ROOT/'out/context-auto'
 ELEMENTS=('time','place','people','cause','process','result')
+
+def current(root):
+    """Expose the latest context state without sharing its storage layout."""
+    root = Path(root).resolve(); folder = root / 'out' / 'context-auto'
+    def read(path, default):
+        if not path.resolve().is_relative_to(root): return default
+        try: return json.loads(path.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError, UnicodeDecodeError): return default
+    state = read(folder / 'state.json', {})
+    candidate = read(folder / 'candidate.json', None)
+    return {'schema': 'context-current/v1', 'state': state if isinstance(state, dict) else {},
+            'candidate': candidate if isinstance(candidate, dict) else None}
+
+def candidate_path(root):
+    root=Path(root).resolve();path=(root/'out'/'context-auto'/'candidate.json').resolve()
+    if not path.is_relative_to(root) or not path.is_file():raise FileNotFoundError('尚未生成自动情景')
+    return path
+
 
 def validate_candidate(candidate, rows):
     if not isinstance(candidate,dict) or not isinstance(candidate.get('sixElements'),dict) or not all(k in candidate['sixElements'] for k in ELEMENTS) or not isinstance(candidate.get('narrative'),str) or not candidate['narrative'].strip():
@@ -33,32 +52,20 @@ def generate(root=ROOT, now=None, invoke=call, model='glm-5.3-flash'):
     save(dest/'state.json',state)
     try:
         days={dt.datetime.fromtimestamp(ts).strftime('%Y%m%d') for ts in (now-3600,now)}
-        paths=[]
-        for day in sorted(days):
-            paths.append(root/'out'/day/'timeline.jsonl')
-            paths.extend((root/'out').glob('cloud-asr-*/'+day+'/timeline.jsonl'))
-        corrections=load_corrections(root)
         records={}
-        for path in sorted(paths,key=lambda p:(p.parent.parent.name.startswith('cloud-asr-'),p.stat().st_mtime if p.exists() else 0)):
-            if not path.exists():continue
-            with path.open(encoding='utf-8') as stream:
-                for n,line in enumerate(stream,1):
-                    try:
-                        row=json.loads(line)
-                        if not isinstance(row,dict): continue
-                        try: row=effective(row,path,corrections)
-                        except (KeyError,TypeError,ValueError,OverflowError): pass
-                        ts=float(row.get('ts',0)); text=str(row.get('text','')).strip()
-                        if now-3600<=ts<=now and text and not suspected_prompt_echo(text):
-                            filename, start, end = row.get('file'), row.get('start'), row.get('end')
-                            if (isinstance(filename,str) and filename and isinstance(start,(int,float)) and not isinstance(start,bool)
-                                    and isinstance(end,(int,float)) and not isinstance(end,bool)
-                                    and math.isfinite(start) and math.isfinite(end) and end >= start):
-                                identity = ('segment', filename, start, end)
-                            else:
-                                identity = ('line', str(path), n)
-                            records[identity]={'id':str(path.relative_to(root))+':'+str(n),'ts':ts,'text':text}
-                    except (ValueError,TypeError):continue
+        for source, n, row in MaterialExchange(root).recent_transcripts(days):
+            try:
+                ts=float(row.get('ts',0)); text=str(row.get('text','')).strip()
+                if now-3600<=ts<=now and text and not suspected_prompt_echo(text):
+                    filename, start, end = row.get('file'), row.get('start'), row.get('end')
+                    if (isinstance(filename,str) and filename and isinstance(start,(int,float)) and not isinstance(start,bool)
+                            and isinstance(end,(int,float)) and not isinstance(end,bool)
+                            and math.isfinite(start) and math.isfinite(end) and end >= start):
+                        identity = ('segment', filename, start, end)
+                    else:
+                        identity = ('line', source, n)
+                    records[identity]={'id':source+':'+str(n),'ts':ts,'text':text}
+            except (ValueError,TypeError):continue
         rows=sorted(records.values(),key=lambda x:x['ts'])
         if not rows:
             save(dest/'state.json',{'status':'waiting','updatedAt':now,'message':'最近一小时没有字幕'}); return 'waiting'
@@ -67,7 +74,7 @@ def generate(root=ROOT, now=None, invoke=call, model='glm-5.3-flash'):
         if (dest/'candidate.json').exists():previous=json.loads((dest/'candidate.json').read_text(encoding='utf-8'))
         if previous.get('inputHash')==signature:
             save(dest/'state.json',{'status':'unchanged','updatedAt':now,'message':'字幕没有变化'}); return 'unchanged'
-        key=KEY.read_text(encoding='utf-8').strip()
+        key=key_file(root).read_text(encoding='utf-8').strip()
         if not key:raise ValueError('智谱 API 密钥为空')
         instruction=('根据字幕还原正在发生的具体情景，供后续AI理解处境，不要写成知识摘要。严格返回JSON：{"sixElements":{"time":{"value":"","sources":[]},"place":{"value":"未知","sources":[]},"people":{"value":"未知","sources":[]},"cause":{"value":"","sources":[]},"process":{"value":"","sources":[]},"result":{"value":"","sources":[]}},"narrative":"","uncertainties":[]}。'
           '六要素分别回答：时间（用字幕时间确定录音时间范围，不等于事件发生时间）、地点、人物及角色、起因、按先后顺序发生的经过、截至目前的结果或未解决的问题。'
@@ -90,7 +97,7 @@ def generate(root=ROOT, now=None, invoke=call, model='glm-5.3-flash'):
 
 if __name__=='__main__':
     import argparse
-    parser=argparse.ArgumentParser();parser.add_argument('--once',action='store_true');parser.add_argument('--stop-file',type=Path);parser.add_argument('--ready-file',type=Path);parser.add_argument('--root',type=Path,default=ROOT);parser.add_argument('--model',default='glm-5.3-flash');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--once',action='store_true');parser.add_argument('--stop-file',type=Path);parser.add_argument('--ready-file',type=Path);parser.add_argument('--root',type=Path,default=default_data_root());parser.add_argument('--model',default='glm-5.3-flash');args=parser.parse_args()
     import singlelock
     lock=singlelock.acquire(str(args.root/'.locks'/'context-auto.lock'))
     if lock is None:

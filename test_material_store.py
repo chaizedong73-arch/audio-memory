@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from material_store import initialize, update_module, register_material, get_material
+from material_store import initialize, update_module, register_material, get_material, read_material, ppt_note_candidates
 
 
 class MaterialStoreTests(unittest.TestCase):
@@ -33,6 +33,37 @@ class MaterialStoreTests(unittest.TestCase):
             self.assertEqual(get_material('a', root)['source'], 'record/a.wav')
             with self.assertRaises(ValueError):
                 register_material('b', 'audio', '../private.wav', 'hash', {}, root)
+
+    def test_read_registered_material_uses_identity_and_confines_source(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as elsewhere:
+            root = Path(folder)
+            source = root / 'record' / 'sample.wav'
+            source.parent.mkdir(); source.write_bytes(b'audio-content')
+            register_material('a' * 24, 'audio', 'record/sample.wav', 'hash', {}, root)
+            item, content = read_material('a' * 24, root)
+            self.assertEqual(content, b'audio-content')
+            self.assertEqual(item['kind'], 'audio')
+            register_material('b' * 24, 'transcript_segment', 'record/sample.wav', 'hash', {'record': {'text': 'corrected'}}, root)
+            self.assertEqual(read_material('b' * 24, root)[1]['text'], 'corrected')
+            with self.assertRaises(FileNotFoundError): read_material('c' * 24, root)
+            outside = Path(elsewhere) / 'private.wav'; outside.write_bytes(b'private')
+            source.unlink()
+            try: source.symlink_to(outside)
+            except OSError: return
+            with self.assertRaises(FileNotFoundError): read_material('a' * 24, root)
+
+    def test_ppt_candidates_reads_only_requested_session_and_orders(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); self.assertEqual(ppt_note_candidates(root, 's', 'p'), [])
+            database = initialize(root)
+            with closing(sqlite3.connect(database)) as db, db:
+                db.execute('CREATE TABLE ppt_note_candidates(session_id TEXT, slide_id TEXT, note_path TEXT, method TEXT, score REAL, state TEXT)')
+                db.executemany('INSERT INTO ppt_note_candidates VALUES(?,?,?,?,?,?)', [
+                    ('s', 'p', 'one', 'match', .5, 'confirmed'),
+                    ('s', 'p', 'two', 'match', .9, 'candidate'),
+                    ('other', 'p', 'private', 'match', 1, 'confirmed')])
+            result = ppt_note_candidates(root, 's', 'p')
+            self.assertEqual([x['path'] for x in result], ['two', 'one'])
 
     def test_future_schema_is_rejected_without_overwriting(self):
         with tempfile.TemporaryDirectory() as folder:

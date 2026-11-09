@@ -24,6 +24,27 @@ class GatewayTests(unittest.TestCase):
 
     def tearDown(self): self.temp.cleanup()
 
+    def test_indexed_content_requires_auth_and_reads_by_identity(self):
+        from material_store import register_material
+        audio = self.root / 'record' / 'example.wav'
+        audio.parent.mkdir(); audio.write_bytes(b'example-audio')
+        identity = 'a' * 24
+        register_material(identity, 'audio', 'record/example.wav', 'hash', {}, self.root)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), handler(self.root, token='test-token'))
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        url = f'http://127.0.0.1:{server.server_port}/v1/indexed-materials/{identity}/content'
+        try:
+            with self.assertRaises(HTTPError) as error: urlopen(url)
+            self.assertEqual(error.exception.code, 401)
+            with urlopen(Request(url, headers={'Authorization': 'Bearer test-token'})) as response:
+                self.assertEqual(response.read(), b'example-audio')
+            audio.unlink()
+            with self.assertRaises(HTTPError) as error:
+                urlopen(Request(url, headers={'Authorization': 'Bearer test-token'}))
+            self.assertEqual(error.exception.code, 404)
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
     def test_indexes_transcript_and_slide_with_provenance(self):
         manifest = build(self.root)
         kinds = {item['kind'] for item in manifest['materials']}

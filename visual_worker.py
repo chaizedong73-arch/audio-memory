@@ -1,4 +1,7 @@
 """Watch completed camera recordings and invoke the independent video/OCR units."""
+from data_location import data_root as default_data_root
+from gateway_credentials import read_gateway_token
+from material_exchange import MaterialExchange
 import argparse
 import hashlib
 import json
@@ -16,35 +19,11 @@ ROOT = Path(__file__).resolve().parent
 
 
 def _recording_start(root, video):
-    """Use only a saved capture event explicitly referring to this video."""
-    events = root / 'out' / 'scene' / 'events.jsonl'
-    if not events.is_file() or not events.resolve().is_relative_to(root): return None
-    found = None
-    try:
-        with events.open('rb') as stream:
-            for raw in stream:
-                try:
-                    event = json.loads(raw.decode('utf-8'))
-                    ts = event.get('startAt')
-                    if (event.get('event') == 'record-end' and event.get('state') == 'saved'
-                            and isinstance(ts, (int, float)) and math.isfinite(ts) and ts > 0
-                            and Path(event.get('path', '')).resolve() == video):
-                        found = ts
-                except (ValueError, TypeError, AttributeError, OSError, UnicodeDecodeError):
-                    continue
-    except OSError:
-        return None
-    return found
+    return MaterialExchange(root).video_start(video)
 
 
 def _alignment_fingerprint(root, start):
-    sources = []
-    for path in sorted((root / 'out').glob('**/timeline.jsonl')):
-        try:
-            if path.resolve().is_relative_to(root):
-                stat = path.stat(); sources.append((path.relative_to(root).as_posix(), stat.st_size, stat.st_mtime_ns))
-        except OSError:
-            continue
+    sources = MaterialExchange(root).transcript_fingerprint()
     return hashlib.sha256(json.dumps([start, sources], sort_keys=True).encode()).hexdigest()
 
 
@@ -80,7 +59,7 @@ def publish(root, state, stop_file=None):
             state['indexWarning'] = '材料登记失败，将自动重试'
     if state.get('gatewayPending', True) and not (stop_file and Path(stop_file).exists()):
         try:
-            token = (root / 'out' / 'ai-gateway' / 'access-token').read_text(encoding='utf-8').strip()
+            token = read_gateway_token(root)
             request = Request('http://127.0.0.1:8768/v1/refresh', data=b'{}',
                               headers={'Authorization':'Bearer ' + token, 'Content-Type':'application/json'}, method='POST')
             with urlopen(request, timeout=10) as response:
@@ -93,10 +72,9 @@ def publish(root, state, stop_file=None):
 
 
 def run_one(video, root=ROOT, invoke=subprocess.run, stop_file=None):
-    root = Path(root).resolve(); video = Path(video).resolve(strict=True)
-    if not video.is_file() or not video.is_relative_to(root / 'record' / 'camera') or '.partial.' in video.name:
-        raise ValueError('Expected a completed local camera video')
-    stat = video.stat(); source = video.relative_to(root).as_posix()
+    root = Path(root).resolve()
+    video, source = MaterialExchange(root).video_source(video)
+    stat = video.stat()
     key = hashlib.sha256(f'{source}\0{stat.st_size}\0{stat.st_mtime_ns}'.encode()).hexdigest()
     state_path = root / 'out' / 'visual-tasks' / (key + '.json')
     state = json.loads(state_path.read_text(encoding='utf-8-sig')) if state_path.exists() else {'source': source, 'stage': 'new'}
@@ -120,14 +98,9 @@ def run_one(video, root=ROOT, invoke=subprocess.run, stop_file=None):
             if result.returncode: raise RuntimeError('video_unit_failed')
             extraction = json.loads(result.stdout)
             if extraction.get('truncated'): raise RuntimeError('video_extraction_truncated')
-            index = Path(extraction['index']).resolve()
-            if not index.is_relative_to(root) or not index.is_file(): raise ValueError('invalid index')
+            index, _, _ = MaterialExchange(root).video_slide_index(extraction['index'])
             state.update(index=str(index), stage='extracted'); _save(state_path, state)
-        index = Path(state['index']).resolve()
-        if not index.is_relative_to(root) or not index.is_file(): raise ValueError('invalid index')
-        items = json.loads(index.read_text(encoding='utf-8-sig')).get('items', [])
-        images = [str(Path(item['path']).resolve()) for item in items]
-        if any(not Path(p).is_relative_to(root) for p in images): raise ValueError('image outside project')
+        index, images, video_index = MaterialExchange(root).video_slide_index(state['index'])
         empty = state.get('emptyPages', 0)
         if not state.get('ocrDone'):
             empty = 0
@@ -139,7 +112,6 @@ def run_one(video, root=ROOT, invoke=subprocess.run, stop_file=None):
                 if ocr.returncode: raise RuntimeError('ocr_unit_failed')
                 empty += int(json.loads(ocr.stdout).get('empty', 0))
             state.update(ocrDone=True, emptyPages=empty, stage='ocr_completed'); _save(state_path, state)
-        video_index = index.parent / 'video.json'
         alignment_command = [sys.executable, str(ROOT / 'time_alignment_unit.py'), str(video_index), '--root', str(root)]
         if start is not None: alignment_command += ['--video-start', str(start)]
         check_stop()
@@ -166,13 +138,25 @@ def run_one(video, root=ROOT, invoke=subprocess.run, stop_file=None):
     return state
 
 
+def list_tasks(root=ROOT):
+    """Return bounded public task status, retaining source checks."""
+    root = Path(root).resolve(); folder = root / 'out' / 'visual-tasks'
+    paths = sorted(folder.glob('*.json'), key=lambda path: path.stat().st_mtime, reverse=True)[:100]
+    tasks = []
+    for path in paths:
+        if not path.resolve().is_relative_to(root): continue
+        try: state = json.loads(path.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError, UnicodeDecodeError): continue
+        if isinstance(state, dict):
+            tasks.append({key: state[key] for key in ('source', 'stage', 'pages', 'error', 'warning', 'alignmentWarnings', 'indexWarning', 'gatewayWarning') if key in state})
+    return {'schema': 'visual-tasks/v1', 'items': tasks}
+
+
 def scan(root=ROOT, stop_file=None):
     root = Path(root).resolve()
     result = []
-    folder = root / 'record' / 'camera'
-    for path in sorted(folder.iterdir()) if folder.is_dir() else []:
+    for path in MaterialExchange(root).videos():
         if stop_file and Path(stop_file).exists(): break
-        if not path.is_file() or path.suffix.lower() not in {'.webm', '.mp4', '.mov', '.mkv'} or '.partial.' in path.name.lower(): continue
         try:
             result.append(run_one(path, root, stop_file=stop_file) if stop_file else run_one(path, root))
         except (OSError, ValueError) as error:
@@ -182,7 +166,7 @@ def scan(root=ROOT, stop_file=None):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root', type=Path, default=ROOT)
+    parser.add_argument('--root', type=Path, default=default_data_root())
     parser.add_argument('--watch', action='store_true')
     parser.add_argument('--stop-file', type=Path)
     parser.add_argument('--ready-file', type=Path)

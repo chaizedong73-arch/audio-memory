@@ -6,7 +6,6 @@
 """
 import os, sys, wave
 import numpy as np
-import sherpa_onnx
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -27,6 +26,7 @@ def read_wav(p):
 
 
 def diar(a, n=2, th=0.5):
+    import sherpa_onnx
     cfg = sherpa_onnx.OfflineSpeakerDiarizationConfig(
         segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
             pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(model=SEG),

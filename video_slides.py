@@ -9,6 +9,7 @@ Uses the existing local detector; no model calls or audio uploads.
    从显存搬回内存（实测 250 fps → 714 fps）。
 3. 显著降维后的粗筛接管"是不是旧页"的判定，ECC 只在粗筛通过后才执行。
 """
+from data_location import data_root as default_data_root
 import argparse
 import json
 import os
@@ -292,7 +293,7 @@ def contact_sheet(detector):
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('source', type=Path)
-    p.add_argument('--root', type=Path, default=Path(__file__).resolve().parent)
+    p.add_argument('--root', type=Path, default=default_data_root())
     p.add_argument('--interval', type=float, default=1)
     p.add_argument('--roi', type=float, nargs=4, metavar=('X', 'Y', 'W', 'H'))
     p.add_argument('--limit', type=float, help='Explicit preview length in seconds; omit for full video')

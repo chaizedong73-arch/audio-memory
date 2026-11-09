@@ -18,6 +18,20 @@ from ai_material_gateway import handler
 
 
 class BridgeTests(unittest.TestCase):
+    def test_bridge_uses_ingestion_contract_without_legacy_directories(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            audio = {'audio': 2, 'transcript': 3, 'errors': []}
+            visual = {'slides': 1, 'ocr': 2, 'alignment': 0, 'feedback': 1, 'errors': []}
+            with patch('material_ingest.ingest_recordings_and_transcripts', return_value=audio) as first, \
+                 patch('material_ingest.ingest_visual_and_feedback', return_value=visual) as second:
+                result = sync(root)
+            self.assertEqual((result['audio'], result['transcript'], result['slides'], result['feedback']), (2, 3, 1, 1))
+            self.assertEqual(result['errors'], [])
+            self.assertEqual(first.call_args.args[0], root.resolve())
+            self.assertEqual(second.call_args.args[0], root.resolve())
+            self.assertFalse((root / 'record').exists())
+
     def test_feedback_is_indexed_and_readable(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -51,6 +65,27 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(len(result['items'][0]['metadata']['text']), 1600)
             finally:
                 server.shutdown(); server.server_close(); thread.join()
+
+    def test_relocated_slide_and_ocr_require_matching_content_hash(self):
+        import shutil
+        from ai_material_gateway import build
+        from material_store import list_materials
+        with tempfile.TemporaryDirectory() as folder:
+            base=Path(folder);old=base/'old';new=base/'new';image=old/'out'/'scene'/'ppt'/'run'/'page.png'
+            image.parent.mkdir(parents=True);image.write_bytes(b'fixture image')
+            content_hash=hashlib.sha256(image.read_bytes()).hexdigest()
+            (image.parent/'index.json').write_text(json.dumps({'items':[{'id':'p','path':str(image),'contentHash':content_hash}]}),encoding='utf-8')
+            catalog=old/'out'/'ppt-concepts';catalog.mkdir()
+            (catalog/'catalog.json').write_text(json.dumps({'pages':{str(image):{'hash':content_hash}}}),encoding='utf-8')
+            (catalog/(content_hash+'.json')).write_text(json.dumps({'text':'visual text'}),encoding='utf-8')
+            new.mkdir();shutil.copytree(old/'out',new/'out')
+            report=sync(new);self.assertEqual((report['slides'],report['ocr'],report['errors']),(1,1,[]))
+            self.assertEqual(list_materials(new,kind='ppt_ocr')['total'],1)
+            manifest=build(new,write=False);self.assertEqual({x['kind'] for x in manifest['materials']},{'ppt_slide','ppt_ocr'})
+            migrated=new/'out'/'scene'/'ppt'/'run'/'page.png';migrated.write_bytes(b'changed')
+            report=sync(new);self.assertGreaterEqual(len(report['errors']),2)
+            self.assertEqual(build(new,write=False)['materials'],[])
+            self.assertEqual(image.read_bytes(),b'fixture image')
 
     def test_revision_overlay_is_kept_in_database(self):
         with tempfile.TemporaryDirectory() as folder:

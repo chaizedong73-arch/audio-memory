@@ -12,6 +12,17 @@ TLS_PORT=19644
 CERT_PORT=19645
 
 def local_ip():
+ if os.name=='nt':
+  # A VPN's default route can report its private TUN address, unreachable by phones.
+  command="Get-NetIPConfiguration -Detailed | Where-Object { $_.NetAdapter.HardwareInterface -and $_.NetAdapter.Status -eq 'Up' -and $_.IPv4DefaultGateway } | ForEach-Object { $_.IPv4Address.IPAddress }"
+  result=subprocess.run(['powershell.exe','-NoProfile','-Command',command],capture_output=True,text=True,timeout=20,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+  if result.returncode:raise ValueError('无法读取物理网卡地址，请检查 Wi-Fi 连接')
+  for value in result.stdout.splitlines():
+   value=value.strip()
+   try:ip=ipaddress.ip_address(value)
+   except ValueError:continue
+   if ip.version==4 and ip.is_private and not ip.is_loopback and not ip.is_link_local and ip not in ipaddress.ip_network('198.18.0.0/15'):return value
+  raise ValueError('未找到可用的物理局域网IPv4地址，请连接 Wi-Fi 或网线')
  with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sock:
   sock.connect(('192.0.2.1',9));value=sock.getsockname()[0]
  ip=ipaddress.ip_address(value)

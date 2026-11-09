@@ -37,7 +37,9 @@
     "test-classroom-mode-ui.ps1",
     "SceneCamera.cs",
     "test-scene-ui.ps1",
-    "test-wifi-pane.ps1"
+    "test-wifi-pane.ps1",
+    "test-boundary.ps1",
+    "test-package.ps1"
   ],
   "assembly": "AudioMemory.dll",
   "type": "AiAudioMemory.AudioPane"

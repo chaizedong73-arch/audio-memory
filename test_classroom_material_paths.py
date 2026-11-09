@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,6 +32,21 @@ class ClassroomMaterialPathsTests(unittest.TestCase):
             self.assertTrue(result.resolve().is_relative_to((data/'out'/'live-materials').resolve()))
             load.assert_called_once_with(data.resolve())
             self.assertFalse((program/'out').exists())
+
+    def test_cloud_selection_uses_only_selected_data_root(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as outside:
+            root=Path(folder); local=root/'out'/'day'; local.mkdir(parents=True)
+            cloud=root/'out'/'cloud-asr-example'/'day'; cloud.mkdir(parents=True)
+            for path,text in ((local,'local content'),(cloud,'cloud content')):
+                (path/'timeline.jsonl').write_text(json.dumps({'text':text,'file':'test.wav','start':0,'end':1})+'\n',encoding='utf-8')
+            (root/'transcription-control.json').write_text('{"mode":"cloud"}',encoding='utf-8')
+            state={'active':True,'deadline':time.time()+300,'latestDayDir':str(cloud)}
+            status=root/'cloud-asr-trial.json';status.write_text(json.dumps(state),encoding='utf-8')
+            self.assertIn('cloud content',classroom_materials.publish(local,root=root).read_text(encoding='utf-8'))
+            foreign=Path(outside);(foreign/'timeline.jsonl').write_text('{"text":"private"}\n',encoding='utf-8')
+            state['latestDayDir']=str(foreign);status.write_text(json.dumps(state),encoding='utf-8')
+            output=classroom_materials.publish(local,root=root).read_text(encoding='utf-8')
+            self.assertIn('local content',output);self.assertNotIn('private',output)
 
 
 if __name__ == '__main__':

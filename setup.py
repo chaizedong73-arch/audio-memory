@@ -43,7 +43,8 @@ def main():
     subprocess.run([str(PYTHON),'-m','pip','install','-r',str(ROOT/'requirements-core.txt')],check=True)
     if args.vision:subprocess.run([str(PYTHON),'-m','pip','install','-r',str(ROOT/'requirements-vision.txt')],check=True)
     from material_store import initialize
-    print('Local materials database:', initialize(ROOT))
+    from data_location import data_root as default_data_root
+    print('Local materials database:', initialize(default_data_root()))
     raise SystemExit(subprocess.call([str(PYTHON),str(__file__),'doctor']+(['--vision'] if args.vision else [])))
 
 if __name__=='__main__':main()

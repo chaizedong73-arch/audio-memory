@@ -10,12 +10,13 @@ const { createServiceController } = require('./service-controller.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 if (process.env.AUDIO_MEMORY_TEST_USER_DATA) app.setPath('userData', process.env.AUDIO_MEMORY_TEST_USER_DATA);
-const root = process.env.AUDIO_MEMORY_ROOT || (app.isPackaged ? path.join(app.getPath('userData'),'data') : path.resolve(__dirname, '..'));
+const root = process.env.AUDIO_MEMORY_ROOT || (app.isPackaged ? path.join(app.getPath('userData'),'data') : path.resolve(__dirname, '..', '..', '数据'));
 let controller;
 let contextController;
 let recordingController;
 let visualController;
 let cameraController;
+let mobileSyncController;
 let classroomFlow;
 let transcriptionMode='local';
 let asrProvider=null;
@@ -30,10 +31,13 @@ app.whenReady().then(() => {
   const options = { root, projectRoot:process.env.AUDIO_MEMORY_TEST_PROJECT_ROOT || (app.isPackaged ? path.join(process.resourcesPath,'backend') : path.resolve(__dirname, '..')), pythonExecutable:process.env.AUDIO_MEMORY_TEST_PYTHON || undefined, nodeExecutable:process.execPath, registryPath, registryDir, registryStore };
   controller = createServiceController(options);
   contextController = createServiceController({...options,kind:'context'});
-  const cloudConfig=path.join(os.homedir(),'WorkBuddy','asr_local','config','ark_config.json');
+  const cloudConfig=process.env.AUDIO_MEMORY_TEST_CLOUD_CONFIG || path.join(root,'config','ark_config.json');
+  const modeFile=path.join(app.getPath('userData'),'transcription-mode.json');
+  try {const saved=JSON.parse(fs.readFileSync(modeFile,'utf8'));if(['local','cloud','legacy'].includes(saved.mode))transcriptionMode=saved.mode;}catch{}
   const providerFile=path.join(app.getPath('userData'),'asr-provider.encrypted');
   try {if(fs.existsSync(providerFile)){if(!safeStorage.isEncryptionAvailable())throw new Error('encryption unavailable');asrProvider=JSON.parse(safeStorage.decryptString(fs.readFileSync(providerFile)));}}catch{providerLoadError=true;}
   recordingController = createServiceController({...options,kind:'recording',transcriptionSettings:()=>({mode:transcriptionMode==='local'?'local':'cloud',config:cloudConfig,provider:transcriptionMode==='legacy'?null:asrProvider})});
+  mobileSyncController=createServiceController({...options,kind:'mobile-sync'});
   visualController = createServiceController({...options,kind:'visual'});
   cameraController = createServiceController({...options,kind:'camera'});
   const setClassroom = async enabled => {
@@ -63,7 +67,7 @@ app.whenReady().then(() => {
       if(entry && /^[a-f0-9]{64}$/i.test(entry.hash)) {const result=JSON.parse(await fs.promises.readFile(path.join(root,'out','ppt-concepts',entry.hash+'.json'),'utf8'));ocrText=typeof result.text==='string'?result.text:'';ocrState=ocrText?'已识别':'未识别到文字';}
     } catch {}
     return {status:'ready',connected:!!data.connected,recording:!!data.recording,phone:data.phone,error:data.error,ppt:data.ppt,
-      preview:await readImage('preview.png'),latestPage,ocrText,ocrState,wifi:data.wifi ? {ip:data.wifi.ip,fingerprint:data.wifi.fingerprint,certificateQr:await readImage('wifi/certificate-qr.png'),captureQr:await readImage('wifi/capture-qr.png')} : null};
+      preview:await readImage('preview.png'),latestPage,ocrText,ocrState,remote:data.remote ? {status:data.remote.status,message:data.remote.message,url:data.remote.url,captureQr:data.remote.status==='ready' ? await readImage('remote/capture-qr.png') : ''} : null,wifi:data.wifi ? {ip:data.wifi.ip,fingerprint:data.wifi.fingerprint,certificateQr:await readImage('wifi/certificate-qr.png'),captureQr:await readImage('wifi/capture-qr.png')} : null};
   };
   const cameraHeartbeat=setInterval(()=>{if(cameraController.isOwned())void cameraClient.request(root,'/status');},5000);
   app.once('will-quit',()=>clearInterval(cameraHeartbeat));
@@ -81,6 +85,8 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('camera:status', () => cameraStatus());
   ipcMain.handle('camera:wifi', () => cameraClient.request(root,'/wifi',{}));
+  ipcMain.handle('camera:remote', () => cameraClient.request(root,'/remote',{}));
+  ipcMain.handle('camera:remote-stop', () => cameraClient.request(root,'/remote/stop',{}));
   ipcMain.handle('camera:usb', async () => {
     if (!cameraController.isOwned()) return {status:'error',message:'请先启动手机采集'};
     const python=options.pythonExecutable || [path.join(options.projectRoot,'runtime','python.exe'),path.join(options.projectRoot,'.venv','Scripts','python.exe')].find(p=>fs.existsSync(p));
@@ -107,15 +113,22 @@ app.whenReady().then(() => {
   ipcMain.handle('context:stop', () => contextController.stop());
   ipcMain.handle('context:status', () => contextController.isOwned());
   ipcMain.handle('recording:start', () => recordingController.start());
-  ipcMain.handle('transcription:mode', (_event,mode) => {
-    if(!['local','cloud','legacy'].includes(mode))return {status:'error',message:'无效模式'};
-    if(recordingController.isOwned())return {status:'error',message:'请先停止录音，再切换转写模式'};
-    if(mode==='cloud'&&providerLoadError)return {status:'error',message:'保存的云端配置暂时无法读取，请重新保存配置'};
-    if(mode==='cloud'&&!asrProvider)return {status:'error',message:'请先配置云端转写服务'};
-    if(mode==='legacy'&&!fs.existsSync(cloudConfig))return {status:'error',message:'本机火山方舟配置不可用'};
-    transcriptionMode=mode;return {status:'ready',mode};
+  const switchMode=require('./transcription-mode.cjs').createModeSwitcher({
+    controller:recordingController,getMode:()=>transcriptionMode,setMode:mode=>{transcriptionMode=mode;},
+    validate:mode=>!['local','cloud','legacy'].includes(mode)?'无效模式':
+      mode==='cloud'&&providerLoadError?'保存的云端配置暂时无法读取，请重新保存配置':
+      mode==='cloud'&&!asrProvider?'请先配置云端转写服务':
+      mode==='legacy'&&!fs.existsSync(cloudConfig)?'本机火山方舟配置不可用':'',
+    persist:mode=>{const temp=modeFile+'.tmp';fs.writeFileSync(temp,JSON.stringify({mode}));fs.renameSync(temp,modeFile);}
   });
-  ipcMain.handle('transcription:provider-read',()=>asrProvider ? {configured:true,url:asrProvider.url,model:asrProvider.model,protocol:asrProvider.protocol,legacyAvailable:fs.existsSync(cloudConfig)} : {configured:false,legacyAvailable:fs.existsSync(cloudConfig),message:providerLoadError?'保存的云端配置无法读取，请重新保存配置。':''});
+  ipcMain.handle('transcription:mode',(_event,mode)=>switchMode(mode));
+  ipcMain.handle('mobile-sync:start',()=>mobileSyncController.start());
+  ipcMain.handle('mobile-sync:remote',(_event,stop)=>{if(!mobileSyncController.isOwned())return {status:'error',message:'请先开启手机同步接收。'};return require('./mobile-sync-client.cjs').remoteCommand(root,stop===true);});
+  ipcMain.handle('mobile-sync:stop',()=>mobileSyncController.stop());
+  ipcMain.handle('mobile-sync:status',async()=>{if(!mobileSyncController.isOwned())return {status:'stopped',pairings:[]};try{return JSON.parse(await fs.promises.readFile(path.join(root,'out/mobile-sync-status.json'),'utf8'));}catch{return {status:'starting',pairings:[]};}});
+  ipcMain.handle('mobile-sync:copy',async(_event,code)=>{try{const status=JSON.parse(await fs.promises.readFile(path.join(root,'out/mobile-sync-status.json'),'utf8'));if(!mobileSyncController.isOwned()||!(status.pairings.some(p=>p.code===code)||(status.remote?.status==='ready'&&status.remote.code===code)))return false;require('electron').clipboard.writeText(code);return true;}catch{return false;}});
+  ipcMain.handle('usage:read',()=>require('./usage-ledger.cjs').readUsage(root));
+  ipcMain.handle('transcription:provider-read',()=>asrProvider ? {mode:transcriptionMode,configured:true,url:asrProvider.url,model:asrProvider.model,protocol:asrProvider.protocol,legacyAvailable:fs.existsSync(cloudConfig)} : {mode:transcriptionMode,configured:false,legacyAvailable:fs.existsSync(cloudConfig),message:providerLoadError?'保存的云端配置无法读取，请重新保存配置。':''});
   ipcMain.handle('transcription:provider-save',(_event,value)=>{
     if(recordingController.isOwned())return {status:'error',message:'请先停止录音'};
     try {
@@ -139,14 +152,14 @@ app.whenReady().then(() => {
   const window = new BrowserWindow({ width: 1160, height: 760, minWidth: 820, minHeight: 560, show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false } });
   window.on('close', event => {
-    if (!quitting && (controller.isOwned() || contextController.isOwned() || recordingController.isOwned() || visualController.isOwned() || cameraController.isOwned())) {
+    if (!quitting && (controller.isOwned() || contextController.isOwned() || recordingController.isOwned() || visualController.isOwned() || cameraController.isOwned() || mobileSyncController.isOwned())) {
       event.preventDefault();
       if (closing) return;
       closing = true;
       window.webContents.send('services:closing');
       const hadCamera = cameraController.isOwned();
       const hadClassroom=classroomFlow.isActive();
-      (async()=>{if(hadClassroom){const result=await classroomFlow.stop();if(result.status!=='stopped')return [result];}return Promise.all([contextController.stop(),recordingController.stop(),visualController.stop(),controller.stop(),cameraController.stop()]);})().then(async results => {
+      (async()=>{if(hadClassroom){const result=await classroomFlow.stop();if(result.status!=='stopped')return [result];}return Promise.all([contextController.stop(),recordingController.stop(),visualController.stop(),controller.stop(),cameraController.stop(),mobileSyncController.stop()]);})().then(async results => {
         const failure = results.find(result => result.status !== 'stopped');
         if (failure) { closing=false; require('electron').dialog.showMessageBox(window,{type:'warning',message:failure.message || '功能尚未停止'}); return; }
         if (hadCamera && !hadClassroom) await setClassroom(false);
@@ -154,6 +167,8 @@ app.whenReady().then(() => {
       }).catch(() => { closing=false; require('electron').dialog.showMessageBox(window,{type:'warning',message:'无法停止功能，请查看日志。'}); });
     }
   });
+  if(process.env.AUDIO_MEMORY_VERIFY_OUTPUT)window.webContents.once('did-finish-load',()=>require(process.env.AUDIO_MEMORY_VERIFY_MOBILE==='1'?'./mobile-sync-ui-verify.cjs':process.env.AUDIO_MEMORY_VERIFY_USAGE==='1'?'./usage-ui-verify.cjs':'./switch-scroll-verify.cjs')(window,app));
+  if(process.env.AUDIO_MEMORY_VERIFY_REMOTE_OUTPUT)window.webContents.once('did-finish-load',()=>require('./remote-ui-verify.cjs')(window,app));
   window.loadFile(path.join(__dirname, 'dist', 'index.html'));
   window.once('ready-to-show', () => window.show());
   if(process.env.AUDIO_MEMORY_DESKTOP_PROVIDER_TEST==='1') {
@@ -273,7 +288,7 @@ app.whenReady().then(() => {
         const waitFor = async expression => { for(let i=0;i<200;i++) { if(await window.webContents.executeJavaScript(expression)) return; await new Promise(resolve => setTimeout(resolve,100)); } throw new Error('UI timeout: '+expression); };
         await waitFor("[...document.querySelectorAll('.nav-item')].some(x => x.innerText.includes('录音'))");
         await window.webContents.executeJavaScript("[...document.querySelectorAll('.nav-item')].find(x => x.innerText.includes('录音')).click()");
-        await waitFor("!!document.querySelector('.record-start')");
+        await waitFor("!!document.querySelector('.record-start:not(:disabled)')");
         await window.webContents.executeJavaScript("document.querySelector('.record-start').click()");
         await waitFor("!!document.querySelector('.record-stop') && document.body.innerText.includes('正在接收音频')");
         if (process.env.AUDIO_MEMORY_DESKTOP_RECORDING_CLOSE_TEST !== '1') {
@@ -318,13 +333,7 @@ app.whenReady().then(() => {
           }
           throw new Error('Timed out waiting for UI state');
         };
-        await waitFor("!!document.querySelector('.primary')");
-        await window.webContents.executeJavaScript("document.querySelector('.primary').click()");
-        await waitFor("document.body.innerText.includes('材料网关已连接') && !!document.querySelector('.stop-link')");
-        if (process.env.AUDIO_MEMORY_DESKTOP_AUTOCLOSE_TEST !== '1') {
-          await window.webContents.executeJavaScript("document.querySelector('.stop-link').click()");
-          await waitFor("document.body.innerText.includes('材料网关未连接') && !!document.querySelector('.primary')");
-        }
+        await waitFor("document.body.innerText.includes('资料已连接')");
         app.quit();
       } catch { app.exit(3); }
     });

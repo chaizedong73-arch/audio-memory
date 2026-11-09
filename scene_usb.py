@@ -1,4 +1,5 @@
 """USB transport setup only; device permission always remains on the phone."""
+from data_location import data_root as default_data_root
 import argparse,json,os,subprocess,sys,time,socket,uuid
 from pathlib import Path
 from scene_capture import ROOT,PORT
@@ -69,7 +70,7 @@ def cleanup(root=ROOT,tools_root=ROOT):
  if state.get('adbOwned'):call(['kill-server'])
 
 if __name__=='__main__':
- parser=argparse.ArgumentParser();parser.add_argument('--root',type=Path,default=ROOT);parser.add_argument('--disconnect',action='store_true');parser.add_argument('--probe',action='store_true');args=parser.parse_args()
+ parser=argparse.ArgumentParser();parser.add_argument('--root',type=Path,default=default_data_root());parser.add_argument('--disconnect',action='store_true');parser.add_argument('--probe',action='store_true');args=parser.parse_args()
  try:
   if args.disconnect:cleanup(args.root)
   else:print(connect(args.root,probe=args.probe))

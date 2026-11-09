@@ -2,18 +2,19 @@
 import hashlib,json,re,subprocess,uuid,time
 from pathlib import Path
 from notes_maintenance import read,save
+from ocr_store import OcrStore
 
 def terms(text):
  return list(dict.fromkeys(re.findall(r'[A-Za-z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*|[α-ωΑ-Ω]|[\u4e00-\u9fff]{2,8}',text)))[:250]
 
-def index_images(images,root,ocr=None,limit=12):
+def index_images(images,root,ocr=None,limit=12,*,folder=None):
  from classroom_mode import require
  require(root)
- folder=root/'out/ppt-concepts';folder.mkdir(parents=True,exist_ok=True);catalog=read(folder/'catalog.json',{'pages':{}});pending=[];result=[]
+ store=OcrStore(root,folder=folder);folder=store.folder;catalog=store.catalog();pending=[];result=[];updates={};stored_results={}
  for image in images:
-  p=Path(image['path']);stamp=[p.stat().st_size,p.stat().st_mtime_ns];old=catalog['pages'].get(str(p),{});key=old.get('hash') if old.get('stamp')==stamp else hashlib.sha256(p.read_bytes()).hexdigest();cached=read(folder/(key+'.json'))
+  p=Path(image['path']);stamp=[p.stat().st_size,p.stat().st_mtime_ns];old=catalog['pages'].get(str(p),{});key=old.get('hash') if old.get('stamp')==stamp else hashlib.sha256(p.read_bytes()).hexdigest();cached=store.result(key)
   if not cached:pending.append((p,key))
-  result.append((p,key,cached));catalog['pages'][str(p)]={'hash':key,'stamp':stamp}
+  result.append((p,key,cached));updates[str(p)]={'hash':key,'stamp':stamp}
  if pending:
   batch=pending[:limit]
   if ocr:items=ocr([p for p,_ in batch])
@@ -28,9 +29,9 @@ def index_images(images,root,ocr=None,limit=12):
   for item in items:
    pair=next(((p,key) for p,key in batch if str(p)==item.get('path')),None)
    if pair:
-    p,key=pair;item.update(hash=key,terms=terms(item.get('text','')),indexedAt=time.time());save(folder/(key+'.json'),item)
- save(folder/'catalog.json',catalog)
- return [{**(read(folder/(key+'.json')) or {'pending':True}),'path':str(p),'hash':key} for p,key,_ in result]
+    p,key=pair;item.update(hash=key,terms=terms(item.get('text','')),indexedAt=time.time());stored_results[key]=item
+ store.commit(updates,stored_results)
+ return [{**(store.result(key) or {'pending':True}),'path':str(p),'hash':key} for p,key,_ in result]
 
 def retrieve(pages,text,limit=4):
  query=terms(text);scores=[]

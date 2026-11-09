@@ -1,4 +1,5 @@
 """Foreground supervisor for recorder and local transcriber, with owned-process cleanup."""
+from data_location import data_root as default_data_root
 import argparse
 import os
 from pathlib import Path
@@ -12,7 +13,7 @@ import threading
 ROOT=Path(__file__).resolve().parent
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--device',default='auto');ap.add_argument('--model',default='base');ap.add_argument('--mode',choices=('local','cloud'),default='local');ap.add_argument('--cloud-config',type=Path);ap.add_argument('--stop-file',type=Path);ap.add_argument('--ready-file',type=Path);ap.add_argument('--root',type=Path,default=ROOT);ap.add_argument('--registry',type=Path);ap.add_argument('--registry-executable',type=Path);ap.add_argument('--parent-registered-file',type=Path);args=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('--device',default='auto');ap.add_argument('--model',default='base');ap.add_argument('--mode',choices=('local','cloud'),default='local');ap.add_argument('--cloud-config',type=Path);ap.add_argument('--stop-file',type=Path);ap.add_argument('--ready-file',type=Path);ap.add_argument('--root',type=Path,default=default_data_root());ap.add_argument('--registry',type=Path);ap.add_argument('--registry-executable',type=Path);ap.add_argument('--parent-registered-file',type=Path);args=ap.parse_args()
     if args.mode=='cloud' and not os.environ.get('AUDIO_MEMORY_ASR_URL') and (not args.cloud_config or not args.cloud_config.is_file()):ap.error('cloud API configuration missing')
     if bool(args.registry) != bool(args.registry_executable):
         ap.error('registry and registry-executable must be supplied together')
@@ -64,13 +65,13 @@ def main():
     bridge=None
     transcriber_reported=False
     try:
-        recorder_args=['--out',str(data_root/'record'),'--device',args.device,'--stop-file',str(recorder_stop)]
+        recorder_args=['--root',str(data_root),'--device',args.device,'--stop-file',str(recorder_stop)]
         if args.ready_file: recorder_args += ['--ready-file',str(args.ready_file)]
         children.append(start_module('recorder','recorder.py',recorder_args))
         if args.mode=='cloud':
             children.append(start_module('transcriber','cloud_transcriber.py',['--root',str(data_root),'--config',str(args.cloud_config),'--stop-file',str(transcriber_stop)]))
         else:
-            children.append(start_module('transcriber','transcriber.py',['--dir',str(data_root/'record'),'--out',str(data_root/'out'),'--model',args.model,'--stop-file',str(transcriber_stop)]))
+            children.append(start_module('transcriber','transcriber.py',['--root',str(data_root),'--model',args.model,'--stop-file',str(transcriber_stop)]))
         try:
             bridge=start_module('material-bridge','material_bridge.py',['--root',str(data_root),'--watch','--stop-file',str(bridge_stop)])
         except OSError as error:
@@ -105,7 +106,7 @@ def main():
             wait_module(children[1])
         if requested_stop and len(children)>1 and args.mode=='local':
             print('Checking saved audio for remaining transcription (up to 120 seconds)...',flush=True)
-            command=[sys.executable,str(ROOT/'transcriber.py'),'--dir',str(data_root/'record'),'--out',str(data_root/'out'),'--model',args.model,'--once']
+            command=[sys.executable,str(ROOT/'transcriber.py'),'--root',str(data_root),'--model',args.model,'--once']
             try:
                 result=subprocess.run(command,cwd=ROOT,timeout=120)
                 if result.returncode:

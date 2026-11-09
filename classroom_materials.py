@@ -9,7 +9,7 @@ DEFAULT_VAULT = Path(__file__).resolve().parent / 'out' / 'live-materials'
 
 
 def publish(daydir, vault=None, root=None):
-    daydir = Path(daydir)
+    daydir = Path(daydir).resolve()
     program_root = Path(__file__).resolve().parent
     home = Path(root).resolve() if root is not None else program_root
     vault = Path(vault) if vault is not None else home / 'out' / 'live-materials'
@@ -20,13 +20,16 @@ def publish(daydir, vault=None, root=None):
             return '(外部资料：请在网关中查询)'
     try:
         state = json.loads((home / 'cloud-asr-trial.json').read_text(encoding='utf-8'))
-        from cloud_asr_trial import control
-        selected = control() if home == program_root else {'mode': 'local'}
+        try:
+            selected = json.loads((home / 'transcription-control.json').read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError):
+            selected = {}
+        cloud_day = Path(state.get('latestDayDir', '')).resolve()
         if (selected.get('mode', 'cloud') == 'cloud' and daydir.parent == home / 'out' and state.get('active')
                 and state.get('deadline', 0) > datetime.datetime.now().timestamp()
-                and state.get('latestDayDir')
-                and datetime.datetime.now().timestamp() - (Path(state['latestDayDir']) / 'timeline.jsonl').stat().st_mtime < 90):
-            daydir = Path(state['latestDayDir'])
+                and state.get('latestDayDir') and cloud_day.is_relative_to(home)
+                and datetime.datetime.now().timestamp() - (cloud_day / 'timeline.jsonl').stat().st_mtime < 90):
+            daydir = cloud_day
     except (OSError, ValueError, TypeError):
         pass
     timeline = daydir / 'timeline.jsonl'
@@ -34,9 +37,15 @@ def publish(daydir, vault=None, root=None):
         return
     rows = deque(maxlen=200)
     from transcript_corrections import effective, load, publish_reviewed
+    from material_exchange import MaterialExchange
     corrections = load(home)
     reviewed = timeline
-    if any(record.get('revision', 0) > 0 and Path(record.get('sourceFile', '')).resolve() == timeline.resolve() for record in corrections.get('records', {}).values()):
+    exchange = MaterialExchange(home)
+    def refers_to_timeline(record):
+        if record.get('revision', 0) <= 0: return False
+        try: return exchange.transcript_source(record.get('sourceFile', ''), allow_relocated=True) == timeline.resolve()
+        except (OSError, ValueError): return False
+    if any(refers_to_timeline(record) for record in corrections.get('records', {}).values()):
         reviewed = publish_reviewed(timeline, root=home)
     with timeline.open(encoding='utf-8') as source:
         for line in source:

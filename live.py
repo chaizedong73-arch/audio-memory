@@ -15,6 +15,7 @@
     录音线程 → queue → 主循环(VAD 判定/切段) → 转写队列 → 转写 worker
     转写是后台串行，不阻塞录音；RTF 0.27 意味着转写比录音快 3.7 倍
 """
+from data_location import data_root as default_data_root
 import os, sys, json, time, queue, threading, argparse, datetime, subprocess
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
@@ -282,7 +283,7 @@ def main():
     ap.add_argument("--silence-checks", type=int, default=2, help="连续几次静默就切段")
     ap.add_argument("--max-seg", type=float, default=600.0, help="单段最长秒数（强制切）")
     ap.add_argument("--min-seg", type=float, default=5.0, help="太短的段丢弃")
-    ap.add_argument("--out", default=os.path.join(HERE, "out", "live"))
+    ap.add_argument("--out", default=os.path.join(str(default_data_root()), "out", "live"))
     ap.add_argument("--source", default=None, help="用音频文件模拟麦克风")
     ap.add_argument("--realtime", action="store_true", help="按 1x 速度喂（默认全速压测）")
     ap.add_argument("--extract-every", type=float, default=600.0,

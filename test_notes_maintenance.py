@@ -57,6 +57,14 @@ class NotesTests(unittest.TestCase):
         source=day/'timeline.jsonl';key=record_key(source,row)
         save({'records':{key:{'sourceFile':str(source),'original':'课堂内容','text':'已修订的课堂内容','revision':1}},'annotations':[]},self.root)
         self.assertEqual(collect(self.root,time.time()-10,{})[0]['text'],'已修订的课堂内容')
+    def test_direct_cloud_transcriber_output_is_collected(self):
+        import datetime as dt
+        day=dt.datetime.now().strftime('%Y%m%d'); target=self.root/'out'/('cloud-asr-'+day)
+        target.mkdir(parents=True)
+        row={'file':'cloud','start':1,'end':2,'ts':time.time(),'text':'云端字幕'}
+        (target/'timeline.jsonl').write_text(json.dumps(row,ensure_ascii=False)+'\n',encoding='utf-8')
+        self.assertEqual([x['text'] for x in collect(self.root,time.time()-10,{})], ['云端字幕'])
+
     def test_cloud_quality_does_not_hide_unprocessed_local_material(self):
         import datetime as dt
         day=dt.datetime.now().strftime('%Y%m%d');local=self.root/'out'/day;cloud=self.root/'out'/'cloud-asr-fixture'/day

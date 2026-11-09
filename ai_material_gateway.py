@@ -6,6 +6,8 @@ records, transcribes, uploads, edits notes, or listens on a network interface.
 Feedback is stored separately and never applied to source materials or notes.
 """
 from __future__ import annotations
+from data_location import data_root as default_data_root
+from material_snapshot import ManifestBuilder, build, iso, read_json, rel, read_content
 
 import argparse
 import datetime as dt
@@ -58,157 +60,6 @@ def validate_action(value):
     # Reuse the gateway's date parser even when no materials exist.
     filtered({'materials': []}, {k: [params[k]] for k in ('after', 'before') if k in params})
     return action
-
-
-def iso(timestamp: float | int | None) -> str | None:
-    if not isinstance(timestamp, (int, float)) or timestamp <= 0:
-        return None
-    return dt.datetime.fromtimestamp(timestamp, tz=dt.timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def file_hash(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def rel(root: Path, path: Path) -> str | None:
-    try:
-        return path.resolve().relative_to(root.resolve()).as_posix()
-    except (OSError, ValueError):
-        return None
-
-
-def read_json(path: Path, default=None):
-    try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError, UnicodeDecodeError):
-        return default
-
-
-def source_time(record: dict) -> str | None:
-    """Only absolute timestamps are unambiguous across time zones."""
-    if isinstance(record.get('ts'), (int, float)) and record['ts'] > 0:
-        try: return iso(record['ts'])
-        except (OverflowError, OSError, ValueError): return None
-    return None
-
-
-class ManifestBuilder:
-    def __init__(self, root: Path = HERE):
-        self.root = root.resolve()
-        self.materials: list[dict] = []
-        self.warnings: list[dict] = []
-        self._source_hashes: dict[Path, str] = {}
-
-    def digest(self, path: Path) -> str:
-        path = path.resolve()
-        if path not in self._source_hashes:
-            self._source_hashes[path] = file_hash(path)
-        return self._source_hashes[path]
-
-    def add(self, kind: str, path: Path, *, locator: str = "", observed_at: str | None = None,
-            preview: str = "", data: dict | None = None, mime: str | None = None) -> None:
-        path = path.resolve()
-        relative = rel(self.root, path)
-        if relative is None or not path.is_file():
-            return
-        source_hash = self.digest(path)
-        version = json.dumps((data or {}).get('effectiveRecord'), ensure_ascii=False, sort_keys=True) if kind == 'transcript_segment' else ''
-        # A line's identity is stable when its JSONL file is appended; content
-        # revision is separate. Reordering lines still changes their identity.
-        identity = f"{kind}\0{relative}\0{locator}" if kind == 'transcript_segment' else f"{kind}\0{relative}\0{locator}\0{source_hash}\0{version}"
-        material_id = hashlib.sha256(identity.encode()).hexdigest()[:24]
-        detected = mime or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        self.materials.append({
-            "id": material_id, "kind": kind, "source": relative, "sourceHash": source_hash,
-            "contentVersion": hashlib.sha256(version.encode()).hexdigest() if version else source_hash,
-            "locator": locator or None, "observedAt": observed_at,
-            "mime": detected, "preview": preview[:1200], "data": data or {},
-        })
-
-    def transcripts(self) -> None:
-        from transcript_corrections import effective, load
-        corrections = load(self.root)
-        for path in sorted((self.root / "out").glob("**/timeline.jsonl")):
-            try:
-                with path.open('rb') as source:
-                    for line_no, raw in enumerate(source, 1):
-                        try:
-                            record = json.loads(raw.decode('utf-8'))
-                            if not isinstance(record, dict): raise ValueError('record must be an object')
-                        except (ValueError, UnicodeDecodeError):
-                            self.warnings.append({'source': rel(self.root, path), 'line': line_no, 'code': 'invalid_transcript_record'})
-                            continue
-                        try: record = effective(record, path, corrections)
-                        except (KeyError, ValueError, TypeError): pass
-                        text = str(record.get("text", "")).strip()
-                        if text:
-                            self.add("transcript_segment", path, locator=f"line:{line_no}", observed_at=source_time(record),
-                                     preview=text, data={**{k: record.get(k) for k in ("t", "ts", "start", "end", "file", "model", "revision", "raw_text") if k in record}, "effectiveRecord": record},
-                                     mime="application/json")
-            except OSError:
-                self.warnings.append({'source': rel(self.root, path), 'code': 'transcript_unreadable'})
-                continue
-
-    def live_materials(self) -> None:
-        for path in sorted((self.root / "out").glob("live-materials/**/当前课堂实时材料.md")):
-            self.add("live_transcript_digest", path, preview=path.read_text(encoding="utf-8")[:1200], mime="text/markdown")
-
-    def slides(self) -> None:
-        out = self.root / "out"
-        for index in sorted((out / "scene" / "ppt").glob("*/index.json")):
-            document = read_json(index, {}) or {}
-            for item in document.get("items", []):
-                path = Path(str(item.get("path", "")))
-                self.add("ppt_slide", path, locator=str(item.get("id", "")), observed_at=iso(item.get("capturedAt")),
-                         data={k: item.get(k) for k in ("firstSeenAt", "capturedAt", "lastSeenAt", "contentHash", "sourcePath", "videoSession", "videoOffsetSeconds") if k in item})
-        for path in sorted((out / "scene" / "frames").glob("*.png")):
-            self.add("scene_frame", path, observed_at=iso(path.stat().st_mtime))
-
-    def ocr_and_visual_results(self) -> None:
-        out = self.root / "out"
-        catalog = read_json(out / "ppt-concepts" / "catalog.json", {}) or {}
-        for source_path, entry in (catalog.get("pages", {}) or {}).items():
-            source = Path(source_path)
-            result = out / "ppt-concepts" / f"{entry.get('hash', '')}.json"
-            payload = read_json(result, {}) or {}
-            text = str(payload.get("text", "")).strip()
-            if source.is_file() and text:
-                self.add("ppt_ocr", source, locator=str(entry.get("hash", "")), observed_at=iso(source.stat().st_mtime), preview=text,
-                         data={"terms": payload.get("terms", []), "extractor": "ppt_concepts", "ocrText": text}, mime="application/json")
-        for path in sorted((out / "scene").glob("last-analysis.json")):
-            payload = read_json(path, {}) or {}
-            self.add("visual_analysis", path, preview=str(payload.get("text", "")), data={k: payload.get(k) for k in ("status", "model", "verification", "elapsedSeconds", "image") if k in payload})
-        for path in sorted((out / "visual-vocabulary" / "scene").glob("**/image.result.json")):
-            payload = read_json(path, {}) or {}
-            self.add("visual_analysis", path, preview=str(payload.get("text", payload.get("result", ""))), data=payload)
-
-    def build(self) -> dict:
-        self.transcripts(); self.live_materials(); self.slides(); self.ocr_and_visual_results()
-        self.materials.sort(key=lambda item: (item["observedAt"] or "", item["id"]), reverse=True)
-        return {
-            "schema": SCHEMA,
-            "generatedAt": iso(dt.datetime.now(tz=dt.timezone.utc).timestamp()),
-            "snapshotId": uuid.uuid4().hex,
-            "scope": {"root": str(self.root), "network": "loopback-only", "writeAccess": False, "feedbackWriteAccess": True},
-            "kinds": sorted({item["kind"] for item in self.materials}),
-            "warnings": self.warnings,
-            "materials": self.materials,
-        }
-
-
-def build(root: Path = HERE, write: bool = True) -> dict:
-    manifest = ManifestBuilder(root).build()
-    if write:
-        destination = root / "out" / "ai-gateway" / "manifest.json"
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(destination)
-    return manifest
 
 
 def filtered(manifest: dict, query: dict[str, list[str]], *, apply_limit: bool = True) -> list[dict]:
@@ -279,6 +130,21 @@ def handler(root: Path, manifest: dict | None = None, token: str | None = None):
                 except (OSError, sqlite3.Error):
                     self.reply(503, {'error': 'material database unavailable'})
                 return
+            indexed_content = re.fullmatch(r'/v1/indexed-materials/([0-9a-f]{24})/content', parsed.path)
+            if indexed_content:
+                from material_store import read_material
+                try:
+                    item, content = read_material(indexed_content.group(1), root)
+                    if isinstance(content, dict):
+                        self.reply(200, content)
+                    else:
+                        mime = mimetypes.guess_type(item['source'])[0] or 'application/octet-stream'
+                        self.reply(200, content, mime)
+                except FileNotFoundError:
+                    self.reply(404, {'error': 'material unavailable'})
+                except (ValueError, OSError, sqlite3.Error):
+                    self.reply(503, {'error': 'material read failed'})
+                return
             if parsed.path == '/v1/modules':
                 from material_store import list_module_status
                 try:
@@ -287,25 +153,13 @@ def handler(root: Path, manifest: dict | None = None, token: str | None = None):
                     self.reply(503, {'error': 'material database unavailable'})
                 return
             if parsed.path == '/v1/context/current':
-                folder = root / 'out' / 'context-auto'
-                state = read_json(folder / 'state.json', {})
-                candidate = read_json(folder / 'candidate.json')
-                self.reply(200, {'schema': 'context-current/v1',
-                                 'state': state if isinstance(state, dict) else {},
-                                 'candidate': candidate if isinstance(candidate, dict) else None})
+                from context_auto import current
+                self.reply(200, current(root))
                 return
             if parsed.path == '/v1/visual/tasks':
-                folder = root / 'out' / 'visual-tasks'
+                from visual_worker import list_tasks
                 try:
-                    paths = sorted(folder.glob('*.json'), key=lambda path: path.stat().st_mtime, reverse=True)[:100]
-                    tasks = []
-                    for path in paths:
-                        if not path.resolve().is_relative_to(root.resolve()):
-                            continue
-                        state = read_json(path)
-                        if isinstance(state, dict):
-                            tasks.append({key: state[key] for key in ('source', 'stage', 'pages', 'error', 'warning', 'alignmentWarnings', 'indexWarning', 'gatewayWarning') if key in state})
-                    self.reply(200, {'schema': 'visual-tasks/v1', 'items': tasks})
+                    self.reply(200, list_tasks(root))
                 except OSError:
                     self.reply(503, {'error': '视觉任务状态不可读取'})
                 return
@@ -357,24 +211,13 @@ def handler(root: Path, manifest: dict | None = None, token: str | None = None):
                 self.reply(404, {"error": "material not found"}); return
             if not match.group(2):
                 self.reply(200, item); return
-            path = (root / item["source"]).resolve()
-            if rel(root, path) is None or not path.is_file():
-                self.reply(404, {"error": "source unavailable"}); return
-            if item["kind"] == "transcript_segment":
-                if 'effectiveRecord' in item['data']:
-                    self.reply(200, item['data']['effectiveRecord']); return
-                try:
-                    line_no = int(str(item["locator"]).split(":", 1)[1])
-                    with path.open(encoding="utf-8") as source:
-                        for current, line in enumerate(source, 1):
-                            if current == line_no:
-                                self.reply(200, json.loads(line)); return
-                except (IndexError, OSError, ValueError, UnicodeDecodeError):
-                    self.reply(404, {"error": "transcript segment unavailable"}); return
-            if item["kind"] == "ppt_ocr":
-                self.reply(200, {"text": item["data"].get("ocrText", item["preview"]), "data": item["data"], "source": item["source"]}); return
-            raw = path.read_bytes()
-            self.reply(200, raw, item["mime"])
+            try:
+                content, mime = read_content(root, item)
+            except FileNotFoundError:
+                self.reply(404, {'error': 'source unavailable'}); return
+            except OSError:
+                self.reply(503, {'error': 'material read failed'}); return
+            self.reply(200, content, mime)
 
         def do_POST(self):
             nonlocal manifest
@@ -404,7 +247,7 @@ def handler(root: Path, manifest: dict | None = None, token: str | None = None):
                 manifest = build(root, write=False)
                 self.reply(200, {'ok': True, 'generatedAt': manifest['generatedAt'], 'materials': len(manifest['materials'])}); return
             if path == '/v1/transcripts/correct':
-                from transcript_corrections import apply_manual_text, publish_reviewed, CorrectionConflict
+                from subtitle_service import correct, CorrectionConflict
                 item_id, snapshot, version, replacement = (value.get(k) for k in ('id', 'snapshot', 'contentVersion', 'text'))
                 if (not isinstance(item_id, str) or not re.fullmatch(r'[0-9a-f]{24}', item_id)
                         or not isinstance(snapshot, str) or not re.fullmatch(r'[0-9a-f]{32}', snapshot)
@@ -416,29 +259,15 @@ def handler(root: Path, manifest: dict | None = None, token: str | None = None):
                 item = next((entry for entry in manifest['materials'] if entry['id'] == item_id and entry['kind'] == 'transcript_segment'), None)
                 if not item:
                     self.reply(404, {'error': '字幕不存在'}); return
-                location = re.fullmatch(r'line:([1-9][0-9]*)', str(item.get('locator') or ''))
-                if not location:
-                    self.reply(400, {'error': '字幕位置无效'}); return
-                source = (root / item['source']).resolve()
                 try:
-                    result = apply_manual_text(root, source, int(location.group(1)), version, replacement)
+                    result, warnings = correct(root, item, version, replacement)
                 except CorrectionConflict as error:
                     self.reply(409, {'error': str(error)}); return
                 except (ValueError, KeyError, TypeError) as error:
                     self.reply(400, {'error': str(error)}); return
                 except OSError:
                     self.reply(503, {'error': '无法写入字幕修订'}); return
-                warnings = []
                 if result['changed']:
-                    try:
-                        publish_reviewed(source, root)
-                    except (OSError, ValueError, KeyError, TypeError):
-                        warnings.append('修订已保存，但修订稿刷新失败')
-                    try:
-                        from classroom_materials import publish
-                        publish(source.parent, root=root)
-                    except (OSError, ValueError, KeyError, TypeError):
-                        warnings.append('修订已保存，但课堂材料刷新失败')
                     try:
                         manifest = build(root, write=False)
                     except (OSError, ValueError, KeyError, TypeError):
@@ -503,7 +332,7 @@ def handler(root: Path, manifest: dict | None = None, token: str | None = None):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Local AI material and feedback gateway")
     parser.add_argument("command", choices=("build", "serve", "show"), nargs="?", default="build")
-    parser.add_argument("--root", type=Path, default=HERE)
+    parser.add_argument("--root", type=Path, default=default_data_root())
     parser.add_argument("--port", type=int, default=8768)
     parser.add_argument('--stop-file', type=Path)
     parser.add_argument("--kind")
@@ -516,22 +345,13 @@ def main() -> None:
         print(json.dumps(items, ensure_ascii=False, indent=2)); return
     root = args.root.resolve()
     manifest = build(root)
-    token_dir = root / 'out' / 'ai-gateway'
-    token_dir.mkdir(parents=True, exist_ok=True)
-    token_path = token_dir / 'access-token'
+    from gateway_credentials import load_or_create_gateway_token
     try:
-        fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        token = token_path.read_text(encoding='ascii').strip()
-        if not re.fullmatch(r'[A-Za-z0-9_-]{32,128}', token):
-            raise SystemExit('Invalid gateway token file; inspect it before starting.')
-    else:
-        token = secrets.token_urlsafe(32)
-        with os.fdopen(fd, 'w', encoding='ascii') as output:
-            output.write(token)
+        token = load_or_create_gateway_token(root)
+    except ValueError as error:
+        raise SystemExit(str(error))
     server = ThreadingHTTPServer(("127.0.0.1", args.port), handler(root, manifest, token))
     print(f"AI material gateway: http://127.0.0.1:{args.port}/v1/health", flush=True)
-    print(f"Local access token file: {token_path}", flush=True)
     try:
         if args.stop_file:
             server.timeout = .5
