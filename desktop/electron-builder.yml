@@ -38,6 +38,13 @@ extraResources:
     to: backend/registry.mjs
   - from: ../build/runtime
     to: backend/runtime
+    filter:
+      - '**/*'
+      - '!Lib/site-packages/imageio_ffmpeg/binaries/*.exe'
+  - from: ../build/release-dependencies/ffmpeg
+    to: backend/runtime/ffmpeg
+  - from: ../third-party-notices
+    to: THIRD_PARTY_NOTICES
   - from: ../build/model/base
     to: backend/models/asr/base
 win:

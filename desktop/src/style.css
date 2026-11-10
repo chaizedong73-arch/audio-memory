@@ -27,3 +27,5 @@ html,body,#root{height:100%;overflow:hidden}.layout{height:100%;min-height:0}.si
 .mobile-pairing{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:16px;font-size:14px;color:#426b5e}
 
 .mobile-network{display:block;color:#879098;font-size:12px;margin-top:5px}
+
+.archive-filter{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 16px;font-size:13px;color:#60746d}.archive-filter label{font-weight:600}.archive-filter input{font:inherit;color:#304c42;background:#fff;border:1px solid #d6e1dc;border-radius:7px;padding:7px 10px}.archive-filter span{color:#84928d;margin-left:4px}

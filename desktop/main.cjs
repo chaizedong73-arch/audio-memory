@@ -72,7 +72,7 @@ app.whenReady().then(() => {
   const cameraHeartbeat=setInterval(()=>{if(cameraController.isOwned())void cameraClient.request(root,'/status');},5000);
   app.once('will-quit',()=>clearInterval(cameraHeartbeat));
   ipcMain.handle('transcripts:read', (_event, options) => readTranscripts(root, fetch, options));
-  ipcMain.handle('transcripts:refresh', () => refreshTranscripts(root));
+  ipcMain.handle('transcripts:refresh', (_event, options) => refreshTranscripts(root, fetch, options));
   ipcMain.handle('transcripts:correct', (_event, value) => correctTranscript(root, value));
   ipcMain.handle('context:read', () => readContext(root));
   ipcMain.handle('visual:read', () => readVisual(root));
@@ -260,6 +260,29 @@ app.whenReady().then(() => {
         await waitFor("document.body.innerText.includes('录像处理已停止，下次可继续')");
         app.quit();
       } catch (error) { console.error(error.message); app.exit(7); }
+    });
+  }
+  if (process.env.AUDIO_MEMORY_DESKTOP_ARCHIVE_TEST === '1') {
+    window.webContents.once('did-finish-load', async () => {
+      try {
+        const waitFor = async expression => { for(let i=0;i<150;i++) { if(await window.webContents.executeJavaScript(expression)) return; await new Promise(resolve => setTimeout(resolve,100)); } throw new Error('UI timeout: '+expression); };
+        await waitFor("document.body.innerText.includes('TODAY_FIXTURE') && !document.body.innerText.includes('OLD_FIXTURE')");
+        if(process.env.AUDIO_MEMORY_TEST_ARCHIVE_SCREENSHOT){for(let i=0;i<50&&!window.isVisible();i++)await new Promise(resolve=>setTimeout(resolve,100));await new Promise(resolve=>setTimeout(resolve,300));const shot=await window.webContents.capturePage();require('node:fs').writeFileSync(process.env.AUDIO_MEMORY_TEST_ARCHIVE_SCREENSHOT,shot.toPNG());}
+        await window.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(x=>x.innerText==='全部历史').click()");
+        await waitFor("document.body.innerText.includes('TODAY_FIXTURE') && document.body.innerText.includes('OLD_FIXTURE')");
+        await window.webContents.executeJavaScript("{const d=new Date();d.setDate(d.getDate()-1);const value=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;const el=document.querySelector('#transcript-day');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,value);el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}");
+        await waitFor("document.body.innerText.includes('OLD_FIXTURE') && !document.body.innerText.includes('TODAY_FIXTURE')");
+        await window.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(x=>x.innerText==='今天').click()");
+        await waitFor("document.body.innerText.includes('TODAY_FIXTURE') && !document.body.innerText.includes('OLD_FIXTURE') && !!document.querySelector('.edit-correction') && !document.querySelector('.edit-correction').disabled");
+        await window.webContents.executeJavaScript("document.querySelector('.edit-correction').click()");
+        await waitFor("!!document.querySelector('textarea')");
+        await window.webContents.executeJavaScript("{const el=document.querySelector('textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(el,'未保存草稿');el.dispatchEvent(new Event('input',{bubbles:true}));}");
+        await window.webContents.executeJavaScript("{const OriginalDate=Date;const future=OriginalDate.now()+86400000;window.Date=class extends OriginalDate{constructor(...args){super(...(args.length?args:[future]))}static now(){return future}};window.dispatchEvent(new Event('focus'));}");
+        await waitFor("document.querySelector('textarea')?.value==='未保存草稿' && document.body.innerText.includes('TODAY_FIXTURE')===false");
+        await window.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(x=>x.innerText==='取消').click()");
+        await waitFor("document.body.innerText.includes('TOMORROW_FIXTURE') && !document.body.innerText.includes('TODAY_FIXTURE')");
+        app.quit();
+      } catch(error){console.error(error.message);app.exit(9);}
     });
   }
   if (process.env.AUDIO_MEMORY_DESKTOP_CORRECTION_TEST === '1' || process.env.AUDIO_MEMORY_DESKTOP_CORRECTION_STALE_TEST === '1') {

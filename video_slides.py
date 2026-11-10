@@ -36,6 +36,8 @@ def find_ffmpeg():
     if candidate:
         if Path(candidate).is_file(): return str(Path(candidate).resolve())
         raise RuntimeError('SLIDES_FFMPEG 指向的文件不存在：'+candidate)
+    bundled = Path(__file__).resolve().parent / 'runtime' / 'ffmpeg' / 'ffmpeg.exe'
+    if bundled.is_file(): return str(bundled)
     candidate = shutil.which('ffmpeg')
     if candidate: return candidate
     try:

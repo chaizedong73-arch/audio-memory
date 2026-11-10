@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import cv2
@@ -10,6 +11,13 @@ from video_slides import extract
 
 
 class VideoSlideTests(unittest.TestCase):
+    def test_packaged_decoder_takes_precedence_over_system_installation(self):
+        import video_slides
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);decoder=root/'runtime'/'ffmpeg'/'ffmpeg.exe';decoder.parent.mkdir(parents=True);decoder.touch()
+            with patch.object(video_slides,'__file__',str(root/'video_slides.py')), patch.dict('os.environ',{},clear=True), patch('video_slides.shutil.which',return_value='system-ffmpeg'):
+                self.assertEqual(video_slides.find_ffmpeg(),str(decoder.resolve()))
+
     def test_real_decode_revisit_and_tail(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

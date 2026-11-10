@@ -79,6 +79,26 @@ def filtered(manifest: dict, query: dict[str, list[str]], *, apply_limit: bool =
         boundary=parsed_time(after); items=[item for item in items if item['observedAt'] and parsed_time(item['observedAt']) >= boundary]
     if before:
         boundary=parsed_time(before); items=[item for item in items if item['observedAt'] and parsed_time(item['observedAt']) <= boundary]
+    day = (query.get('day') or [''])[0]
+    if day:
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', day): raise ValueError('invalid day')
+        dt.date.fromisoformat(day)
+        def item_day(item):
+            record = item.get('data', {}).get('effectiveRecord', {})
+            value = record.get('date') if isinstance(record, dict) else None
+            if isinstance(value, str):
+                try: return dt.date.fromisoformat(value).isoformat()
+                except ValueError: pass
+            source = item.get('source', '')
+            matches = re.findall(r'(?:^|/)(?:cloud-asr-)?(\d{8})(?=/|$)', source)
+            if matches:
+                try: return dt.datetime.strptime(matches[-1], '%Y%m%d').date().isoformat()
+                except ValueError: pass
+            if item.get('observedAt'):
+                try: return parsed_time(item['observedAt']).astimezone().date().isoformat()
+                except (ValueError, OverflowError): pass
+            return None
+        items = [item for item in items if item_day(item) == day]
     try: limit = min(max(int((query.get("limit") or ["100"])[0]), 1), 1000)
     except ValueError: limit = 100
     return items[:limit] if apply_limit else items

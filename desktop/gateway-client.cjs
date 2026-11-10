@@ -10,10 +10,11 @@ async function readTranscripts(root, fetchFn = fetch, options = {}) {
   const token = await credential(root);
   if (!token) return empty('offline');
   const offset = options.offset ?? 0;
-  if (!Number.isSafeInteger(offset) || offset < 0 || (options.snapshot && !/^[a-f0-9]{32}$/.test(options.snapshot))) return empty('error');
+  if (!Number.isSafeInteger(offset) || offset < 0 || (options.snapshot && !/^[a-f0-9]{32}$/.test(options.snapshot)) || (options.day && !/^\d{4}-\d{2}-\d{2}$/.test(options.day))) return empty('error');
   const query = new URLSearchParams({kind:'transcript_segment',limit:'100'});
   if (offset) query.set('offset',String(offset));
   if (options.snapshot) query.set('snapshot',options.snapshot);
+  if (options.day) query.set('day',options.day);
   try {
     const response = await fetchFn(gatewayBase() + '/v1/materials?' + query, {
       headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(4000)
@@ -25,14 +26,14 @@ async function readTranscripts(root, fetchFn = fetch, options = {}) {
     return { status:'ready', items:page.items.map(item => ({ id:String(item.id), version:String(item.contentVersion ?? ''), revision:Number(item.data?.effectiveRecord?.revision ?? 0), text:String(item.data?.effectiveRecord?.text ?? item.preview ?? ''), time:String(item.data?.t ?? ''), source:String(item.source ?? '') })), total:page.total, snapshot:typeof page.snapshot === 'string' ? page.snapshot : '', nextOffset:Number.isSafeInteger(page.nextOffset) && page.nextOffset >= 0 ? page.nextOffset : null };
   } catch { return empty('offline'); }
 }
-async function refreshTranscripts(root, fetchFn = fetch) {
+async function refreshTranscripts(root, fetchFn = fetch, options = {}) {
   const token = await credential(root);
   if (!token) return empty('offline');
   try {
     const response = await fetchFn(gatewayBase() + '/v1/refresh', { method:'POST', headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:'{}',signal:AbortSignal.timeout(30000) });
     if (!response.ok) return empty('error');
   } catch { return empty('offline'); }
-  return readTranscripts(root, fetchFn);
+  return readTranscripts(root, fetchFn, options);
 }
 async function readContext(root, fetchFn = fetch) {
   const token = await credential(root);

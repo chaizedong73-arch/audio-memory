@@ -24,6 +24,20 @@ class GatewayTests(unittest.TestCase):
 
     def tearDown(self): self.temp.cleanup()
 
+    def test_daily_filter_preserves_history_and_undated_records(self):
+        later=self.root/'out'/'cloud-asr-20261110'/'timeline.jsonl';later.parent.mkdir(parents=True)
+        later.write_text(json.dumps({'file':'x','start':0,'end':1,'t':'10:00','text':'today'})+'\n',encoding='utf-8')
+        unknown=self.root/'out'/'mobile-sync'/'device'/'item'/'timeline.jsonl';unknown.parent.mkdir(parents=True)
+        unknown.write_text(json.dumps({'file':'y','start':0,'end':1,'text':'unknown'})+'\n',encoding='utf-8')
+        manifest=build(self.root,write=False)
+        today=filtered(manifest,{'kind':['transcript_segment'],'day':['2026-11-10']},apply_limit=False)
+        old=filtered(manifest,{'kind':['transcript_segment'],'day':['2026-10-30']},apply_limit=False)
+        self.assertEqual([x['preview'] for x in today],['today'])
+        self.assertEqual([x['preview'] for x in old],['这是测试字幕'])
+        self.assertEqual(len(filtered(manifest,{'kind':['transcript_segment']},apply_limit=False)),3)
+        self.assertTrue(unknown.exists());self.assertTrue(later.exists())
+        with self.assertRaises(ValueError):filtered(manifest,{'day':['2026-02-30']})
+
     def test_indexed_content_requires_auth_and_reads_by_identity(self):
         from material_store import register_material
         audio = self.root / 'record' / 'example.wav'
